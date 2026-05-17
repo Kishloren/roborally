@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RoboRally Display</title>
+    <link rel="stylesheet" href="../shared/layout.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main id="display-shell">
+      <section id="game-canvas"></section>
+      <aside id="side-panel">
+        <img id="join-qr" alt="QR code joueur" />
+        <p id="join-url"></p>
+        <div id="players"></div>
+      </aside>
+    </main>
+    <script src="../socket.io/socket.io.js"></script>
+    <script type="module" src="main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>RoboRally Player</title>
+    <link rel="stylesheet" href="../shared/layout.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main id="player-app">
+      <section id="join-panel">
+        <button id="join-button">Rejoindre</button>
+      </section>
+      <section id="program-panel" class="hidden">
+        <section id="player-map" aria-label="Plateau joueur"></section>
+        <aside id="control-panel">
+          <div id="hand"></div>
+          <div id="registers"></div>
+          <button id="submit-button">Valider</button>
+        </aside>
+      </section>
+      <section id="rotate-warning">
+        <strong>Tourne ton smartphone en paysage</strong>
+      </section>
+    </main>
+    <script src="../socket.io/socket.io.js"></script>
+    <script type="module" src="main.js"></script>
+  </body>
+</html>

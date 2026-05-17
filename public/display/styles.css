@@ -1,0 +1,54 @@
+#display-shell {
+  width: 100vw;
+  height: 100vh;
+  min-width: 960px;
+  min-height: 540px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  background: #15191d;
+  overflow: hidden;
+}
+
+#game-canvas {
+  min-width: 0;
+  min-height: 0;
+}
+
+#side-panel {
+  padding: 24px;
+  background: #20262b;
+  border-left: 1px solid #343d45;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+#join-qr {
+  width: 312px;
+  height: 312px;
+  background: white;
+}
+
+#join-url {
+  margin: 0;
+  color: #cbd5de;
+  font-size: 16px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+#players {
+  display: grid;
+  gap: 8px;
+}
+
+.player-row {
+  min-height: 44px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid #39434c;
+  background: #171c20;
+  border-radius: 6px;
+}

@@ -23,6 +23,14 @@ export function createStorage(rootDir) {
       return readJson(path.join(mapsDir, `${mapId}.json`));
     },
 
+    async writeMap(map) {
+      await ensureDirs();
+      const clean = normalizeMap(map);
+      const target = path.join(mapsDir, `${clean.id}.json`);
+      await fs.writeFile(target, JSON.stringify(clean, null, 2), "utf8");
+      return clean;
+    },
+
     async writeSave(game) {
       await ensureDirs();
       const target = path.join(savesDir, `game-${game.id}.json`);
@@ -51,4 +59,30 @@ export function createStorage(rootDir) {
 
 async function readJson(filePath) {
   return JSON.parse(await fs.readFile(filePath, "utf8"));
+}
+
+function normalizeMap(map) {
+  const id = String(map?.id || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!id) throw new Error("Map id invalide");
+  const width = clampInteger(map.width, 1, 64, 12);
+  const height = clampInteger(map.height, 1, 64, 12);
+  const tiles = Array.isArray(map.tiles)
+    ? map.tiles
+        .filter((tile) => Number.isInteger(tile.x) && Number.isInteger(tile.y) && tile.x >= 0 && tile.y >= 0 && tile.x < width && tile.y < height)
+        .map((tile) => ({ ...tile, x: tile.x, y: tile.y }))
+    : [];
+  return {
+    id,
+    name: String(map.name || id).trim() || id,
+    width,
+    height,
+    tileSize: clampInteger(map.tileSize, 24, 160, 72),
+    tiles
+  };
+}
+
+function clampInteger(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(number)));
 }

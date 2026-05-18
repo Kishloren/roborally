@@ -50,6 +50,39 @@ router.get("/api/maps", async (_req, res) => {
   res.json(await storage.listMaps());
 });
 
+router.get("/api/maps/:mapId", async (req, res) => {
+  try {
+    res.json(await storage.readMap(req.params.mapId));
+  } catch (error) {
+    res.status(error.code === "ENOENT" ? 404 : 400).json({ ok: false, error: error.message });
+  }
+});
+
+router.post("/api/maps", async (req, res) => {
+  try {
+    const map = await storage.writeMap({
+      id: req.body?.id,
+      name: req.body?.name,
+      width: req.body?.width || 12,
+      height: req.body?.height || 12,
+      tileSize: req.body?.tileSize || 72,
+      tiles: req.body?.tiles || []
+    });
+    res.json({ ok: true, map });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+router.put("/api/maps/:mapId", async (req, res) => {
+  try {
+    const map = await storage.writeMap({ ...req.body, id: req.params.mapId });
+    res.json({ ok: true, map });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
 router.post("/api/game/new", async (req, res) => {
   const mapId = req.body?.mapId || "factory-01";
   const map = await storage.readMap(mapId);

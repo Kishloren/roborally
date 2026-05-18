@@ -1,6 +1,6 @@
 # RoboRally - Notes de reprise
 
-Date de derniere mise a jour : 2026-05-17
+Date de derniere mise a jour : 2026-05-18
 
 ## Objectif du projet
 
@@ -19,10 +19,12 @@ Routes principales :
 
 - `/display/` : ecran commun Phaser ;
 - `/player/` : interface joueur smartphone ;
-- `/editor/` : emplacement reserve pour l'editeur de maps ;
+- `/backoffice/` : editeur de maps PC sans authentification ;
 - `/api/game/state` : etat public de la partie ;
 - `/api/game/new` : recharge une nouvelle partie depuis une map ;
 - `/api/game/qr` : QR code vers l'interface joueur.
+- `/api/maps` : liste et creation des maps ;
+- `/api/maps/:mapId` : lecture et sauvegarde d'une map JSON.
 
 Serveur :
 
@@ -64,15 +66,30 @@ Etat actuel :
 
 - le champ de saisie du nom joueur a ete supprime pour faciliter le debug ;
 - le bouton `Rejoindre` utilise le nom par defaut `Player` ;
+- l'interface joueur est une scene Phaser unique en plein ecran reel, avec `Phaser.Scale.NONE` et une resolution logique elevee ;
+- le rendu joueur vise au minimum du Full HD logique (`1920x1080`) sur mobile quand le device le permet ;
+- le plateau occupe `2/3` de la largeur et le volet droit `1/3` ;
+- le plateau est deplacable et zoomable via Phaser ;
 - la carte s'affiche des le chargement de l'etat serveur, meme sans joueur connecte ;
-- les cartes restent manipulables par glisser-deplacer apres connexion ;
+- les cartes du volet droit sont rendues dans Phaser et restent manipulables par glisser-deplacer apres connexion ;
 - les registres affichent un point vert/rouge pour indiquer libre/bloque ;
 - les registres bloques refusent le drop.
+- le bouton de calibration et l'overlay de debug rouge ont ete retires de l'interface normale.
 
-Dimensions separees :
+Layout Phaser :
 
-- `--board-tile-size` pour le plateau joueur ;
-- `--card-width` pour les cartes.
+- largeur et hauteur CSS : viewport stable detecte (`screen`, `outer`, `inner`, document ou `visualViewport`) ;
+- largeur et hauteur Phaser : viewport CSS multiplie par le facteur de resolution logique ;
+- plateau : `2/3` de la largeur ;
+- volet joueur : `1/3` de la largeur ;
+- le layout est recalcule a chaque resize.
+
+Drag/drop des cartes :
+
+- les cartes sont des `Container` Phaser contenant le sprite de carte et le texte de priorite ;
+- la surface interactive/draggable est le sprite `Image`, pas le `Container` ;
+- les evenements de drag deplacent le `Container` parent afin que l'image et la priorite restent synchronisees ;
+- les coordonnees de drop utilisent le centre du `Container` de carte, avec fallback sur la position du pointeur.
 
 ## Spritesheets disponibles
 
@@ -93,6 +110,56 @@ Fichiers presents :
 - `pushers.png`
 - `crush.png`
 
+## Backoffice / editeur de maps
+
+La page backoffice est dans :
+
+- `public/editor/index.html`
+- `public/editor/styles.css`
+- `public/editor/main.js`
+
+Adresse locale :
+
+`http://localhost:6282/backoffice/`
+
+Adresse de production prevue derriere nginx :
+
+`https://www.stansgames.fr/roborally/backoffice/`
+
+Etat actuel :
+
+- pas d'authentification ;
+- interface PC avec liste de maps, barre de nom/dimensions, canvas Phaser et palette compacte d'icones ;
+- creation d'une nouvelle map en `12x12`, nommee "Nouvelle carte", avec toutes les cases en sol standard par defaut ;
+- la taille de map est editable entre `1x1` et `64x64` ;
+- les maps sont stockees en JSON dans `data/maps` ;
+- seules les cases modifiees sont presentes dans `tiles`, les autres restent du sol standard implicite ;
+- sauvegarde automatique apres chaque changement de nom, dimensions ou contenu ;
+- palette utilisable par glisser/deposer depuis la palette vers la grille ;
+- le clic sur la grille selectionne une case active ;
+- `R` tourne l'element de la case active si applicable ;
+- `F` inverse l'element de la case active si applicable ;
+- `Suppr` ou `Retour arriere` efface la case active et la ramene au sol standard implicite ;
+- le plateau est volontairement rendu plus petit que la zone disponible pour eviter les debordements sur ecrans PC modestes.
+
+Elements actuellement posables :
+
+- effacer ;
+- trou ;
+- convoyeur normal droit ;
+- convoyeur normal virage ;
+- convoyeur rapide droit ;
+- convoyeur rapide virage ;
+- rotator horaire / antihoraire ;
+- murs par cote de case ;
+- repair 1 / repair 2 ;
+- points de depart ;
+- checkpoints ;
+- emetteur laser simple ;
+- rayon laser ;
+- pousseur ;
+- ecraseur.
+
 ## Cartes joueur
 
 `cartes.png` contient 7 images de `310x460`, dans cet ordre :
@@ -110,8 +177,7 @@ La priorite est ajoutee en blanc dans l'entete, zone source :
 - coin haut-gauche : `(25, 15)` ;
 - coin bas-droit : `(285, 80)`.
 
-Le rendu actuel des cartes est encore DOM/CSS, avec la spritesheet en `background-image`.
-Le plateau joueur, lui, est rendu avec Phaser.
+Les cartes joueur sont maintenant rendues dans Phaser avec la spritesheet `cartes.png`.
 
 ## Sols
 

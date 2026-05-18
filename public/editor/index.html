@@ -3,13 +3,50 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>RoboRally Editor</title>
+    <title>RoboRally Backoffice</title>
     <link rel="stylesheet" href="../shared/layout.css" />
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <main style="padding: 24px">
-      <h1>Editeur de plateaux</h1>
-      <p>Le module editeur est reserve dans le package. Les maps JSON 12x12 sont deja chargees depuis <code>data/maps</code>.</p>
+    <main id="editor-app">
+      <aside class="map-panel">
+        <header>
+          <h1>RoboRally</h1>
+          <span>Backoffice</span>
+        </header>
+        <button id="new-map" class="primary">Nouvelle carte</button>
+        <div id="maps-list" class="maps-list"></div>
+      </aside>
+
+      <section class="workspace">
+        <div class="toolbar">
+          <label>
+            Nom
+            <input id="map-name" type="text" autocomplete="off" />
+          </label>
+          <label>
+            Largeur
+            <input id="map-width" type="number" min="1" max="64" value="12" />
+          </label>
+          <label>
+            Hauteur
+            <input id="map-height" type="number" min="1" max="64" value="12" />
+          </label>
+          <button id="resize-map">Appliquer</button>
+          <strong id="save-state">Pret</strong>
+        </div>
+        <div id="editor-stage" aria-label="Editeur de plateau"></div>
+      </section>
+
+      <aside class="tool-panel">
+        <header>
+          <h2>Elements</h2>
+          <p>Glisser sur la grille. R tourne, F inverse, Suppr efface la case active.</p>
+        </header>
+        <div id="tool-list" class="tool-list"></div>
+      </aside>
     </main>
+
+    <script type="module" src="main.js"></script>
   </body>
 </html>

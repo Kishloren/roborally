@@ -130,6 +130,7 @@ Etat actuel :
 
 - pas d'authentification ;
 - interface PC avec liste de maps, barre de nom/dimensions, canvas Phaser et palette compacte d'icones ;
+- les icones de la palette et de la pile de case sont extraites des spritesheets existantes ;
 - creation d'une nouvelle map en `12x12`, nommee "Nouvelle carte", avec toutes les cases en sol standard par defaut ;
 - la taille de map est editable entre `1x1` et `64x64` ;
 - les maps sont stockees en JSON dans `data/maps` ;
@@ -137,10 +138,33 @@ Etat actuel :
 - sauvegarde automatique apres chaque changement de nom, dimensions ou contenu ;
 - palette utilisable par glisser/deposer depuis la palette vers la grille ;
 - le clic sur la grille selectionne une case active ;
-- `R` tourne l'element de la case active si applicable ;
-- `F` inverse l'element de la case active si applicable ;
-- `Suppr` ou `Retour arriere` efface la case active et la ramene au sol standard implicite ;
+- le panneau droit affiche la pile des elements presents sur la case active ;
+- chaque element de la pile peut etre selectionne individuellement ;
+- `R` tourne l'element selectionne de la case active si applicable ;
+- `F` inverse l'element selectionne de la case active si applicable ;
+- `Suppr` ou `Retour arriere` efface l'element selectionne, ou la case si aucun element n'est selectionne ;
+- boutons et raccourcis `Ctrl+C`, `Ctrl+X`, `Ctrl+V` pour copier/couper/coller l'element selectionne avec sa configuration courante ;
 - le plateau est volontairement rendu plus petit que la zone disponible pour eviter les debordements sur ecrans PC modestes.
+
+Panneau de test backoffice :
+
+- situe en bas de la colonne droite ;
+- le segment courant est choisi dans la colonne gauche avec 5 boutons radio alignes ;
+- sous le segment courant, la colonne gauche affiche une grille `2x4` avec un exemplaire des cartes d'ordres depuis `cartes.png` ;
+- test n° 1 : cliquer une carte d'ordre applique immediatement son effet au robot pose/selectionne ;
+- pour ce premier test, les cartes gerent uniquement rotation et deplacement sur plateau vierge, avec arret au bord de map ;
+- chaque effet de carte anime le robot pendant `1000ms` avec easing `Cubic.easeInOut`, par translation et/ou rotation ;
+- test convoyeurs lents : apres une carte d'ordre, si le robot est sur un convoyeur normal, le backoffice applique un transport d'une case en second effet anime `1000ms` ;
+- les convoyeurs lents droits et a deux entrees transportent vers `conveyor.direction` ; les virages transportent vers la sortie et tournent le robot d'un quart de tour ;
+- le backoffice force l'utilisation de la map JSON `test`, nommee `test`, en `12x12` vide ;
+- le bouton de creation de carte sert a reinitialiser cette map `test` ;
+- mode `Plateau vierge` active par defaut pour isoler les tests de commandes ;
+- affiche les 8 frames de `robots.png` comme elements drag/droppables ;
+- glisser un robot sur la grille le pose ou le deplace ;
+- le drag robot conserve l'element DOM pendant `dragstart` et declare aussi un fallback `text/plain` `robot:n` pour fiabiliser le drop ;
+- le clic sur un robot deja pose le selectionne via une zone Phaser interactive sur la case du robot ;
+- `R` tourne le robot selectionne ;
+- prochaine etape : reappliquer les cartes de programmation au robot selectionne sur ce socle plus simple.
 
 Elements actuellement posables :
 
@@ -148,6 +172,7 @@ Elements actuellement posables :
 - trou ;
 - convoyeur normal droit ;
 - convoyeur normal virage ;
+- convoyeur normal a deux entrees ;
 - convoyeur rapide droit ;
 - convoyeur rapide virage ;
 - rotator horaire / antihoraire ;
@@ -159,6 +184,38 @@ Elements actuellement posables :
 - rayon laser ;
 - pousseur ;
 - ecraseur.
+
+Ecraseur / crusher :
+
+- spritesheet : `crush.png` ;
+- version plain : frame `21` ;
+- version a placer sur convoyeur rectiligne : frame `28` ;
+- la frame `28` est orientee `west -> east` dans sa configuration source ;
+- JSON plain : `crusher: { "variant": "plain", "activeRegisters": [2, 4] }` ;
+- JSON sur convoyeur : `crusher: { "variant": "conveyor", "direction": "east", "activeRegisters": [2, 4] }` ;
+- la rotation `R` modifie la direction de la version sur convoyeur ;
+- le flip `F` inverse la direction de la version sur convoyeur.
+- les crushers portent au maximum deux segments d'activation dans `activeRegisters` ;
+- les touches `1` a `5`, quand la couche crusher est selectionnee, activent/desactivent les segments en gardant les deux derniers choix ;
+- si une couche crusher est deselectionnee sans aucun segment actif, le backoffice force `activeRegisters` a `[1]` ;
+- icones de segment en haut : frames `23` a `27` pour les segments `1` a `5` ;
+- icones de segment en bas : frames `30` a `34` pour les segments `1` a `5` ;
+- exemple `2-4` : frame `24` en haut et frame `33` en bas ;
+- ces icones tournent avec le crusher mais ne sont pas flippees.
+
+Convoyeur a deux entrees :
+
+- spritesheet : `conv.png` ;
+- frame normale : `2` ;
+- frame rapide : `10` ;
+- convention de base : entrees `west` et `south`, sortie `east` ;
+- JSON : `conveyor: { "type": "normal", "shape": "merge", "inputs": ["west", "south"], "direction": "east" }` ;
+- version rapide : meme structure avec `"type": "fast"` ;
+- dans le deplacement `west -> east`, il se comportera comme un convoyeur droit ;
+- dans le deplacement `south -> east`, il se comportera comme un virage droit ;
+- l'element possede 8 configurations : 4 rotations et 2 flips ;
+- la rotation `R` fait tourner ensemble les entrees et la sortie ;
+- le flip `F` conserve la sortie et inverse l'entree laterale.
 
 ## Cartes joueur
 

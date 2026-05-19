@@ -9,7 +9,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -37,7 +38,7 @@ button.primary {
 
 #editor-app {
   display: grid;
-  grid-template-columns: 210px minmax(0, 1fr) 112px;
+  grid-template-columns: 210px minmax(0, 1fr) 180px;
   width: 100vw;
   height: 100vh;
 }
@@ -56,6 +57,7 @@ button.primary {
 .tool-panel {
   border-right: 0;
   border-left: 1px solid #303941;
+  overflow: hidden;
 }
 
 h1,
@@ -77,6 +79,92 @@ header p,
 label {
   color: #8a98a4;
   font-size: 12px;
+}
+
+.segment-panel,
+.order-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid #303941;
+  border-radius: 7px;
+  background: #151b20;
+}
+
+.segment-selector {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 5px;
+}
+
+.segment-selector label {
+  display: block;
+}
+
+.segment-selector input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.segment-selector span {
+  display: grid;
+  place-items: center;
+  min-height: 30px;
+  border: 1px solid #39434c;
+  border-radius: 6px;
+  background: #0f1317;
+  color: #dce5ec;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.segment-selector input:checked + span {
+  border-color: #f2c14e;
+  background: #f2c14e;
+  color: #101316;
+}
+
+.order-card-list {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.order-card {
+  position: relative;
+  aspect-ratio: 31 / 46;
+  min-height: 0;
+  border: 1px solid #39434c;
+  border-radius: 5px;
+  background-image: url("../shared/assets/images/cartes.png");
+  background-repeat: no-repeat;
+  background-size: 700% 100%;
+  overflow: hidden;
+}
+
+.order-card.active {
+  border-color: #f2c14e;
+  box-shadow: 0 0 0 1px #f2c14e;
+}
+
+.order-card-priority {
+  position: absolute;
+  top: 3.2%;
+  left: 8.1%;
+  right: 8.1%;
+  height: 14.1%;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.order-card-empty {
+  visibility: hidden;
 }
 
 .workspace {
@@ -144,8 +232,10 @@ label {
 
 .tool-list {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   align-content: start;
+  flex: 0 0 auto;
+  max-height: 44vh;
 }
 
 .map-button,
@@ -171,6 +261,10 @@ label {
   background: #252c33;
   color: #f2c14e;
   font-weight: 700;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: cover;
+  image-rendering: auto;
 }
 
 .tool-button.active .tool-swatch {
@@ -191,6 +285,123 @@ label {
 .tool-subtitle {
   display: block;
   margin-top: 2px;
+  color: #8a98a4;
+  font-size: 11px;
+}
+
+.stack-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding-top: 12px;
+  border-top: 1px solid #303941;
+}
+
+.stack-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.stack-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+  margin: 8px 0;
+}
+
+.stack-actions button {
+  min-height: 28px;
+  padding: 0 4px;
+  font-size: 11px;
+}
+
+.stack-item {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 5px;
+  text-align: left;
+}
+
+.stack-item .tool-title,
+.stack-item .tool-subtitle {
+  display: block;
+}
+
+.test-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid #303941;
+}
+
+.test-panel label {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 3px;
+}
+
+.test-panel input,
+.test-panel select {
+  min-width: 0;
+  height: 28px;
+  border: 1px solid #39434c;
+  border-radius: 5px;
+  background: #0f1317;
+  color: #eef3f6;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+.test-panel .test-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.test-panel .test-check input {
+  width: 14px;
+  height: 14px;
+}
+
+.robot-list {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.robot-button {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 38px;
+  padding: 2px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.robot-button:active {
+  cursor: grabbing;
+}
+
+.robot-swatch {
+  width: 34px;
+  height: 34px;
+  background-image: url("../shared/assets/images/robots.png");
+  background-repeat: no-repeat;
+  background-size: 272px 34px;
+}
+
+#test-status {
+  min-height: 2.5em;
   color: #8a98a4;
   font-size: 11px;
 }

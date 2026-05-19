@@ -9,7 +9,8 @@ const FLOOR_FRAMES = [0, 6, 13, 14, 15, 16];
 const PIT_FRAMES = { single: 11, vertical: [3, 10], horizontal: [17, 18] };
 const ZONE_FRAMES = { repair1: 0, repair2: 1, spawn: 2, checkpoints: [6, 7, 8, 9, 12, 13, 14, 15] };
 const LASER_FRAMES = { beamsNorthSouth: [0, 1, 2], emittersNorth: [8, 9, 10] };
-const CONVEYOR_FRAMES = { straight: 0, turnRight: 1, fastStraight: 8, fastTurnRight: 9 };
+const CONVEYOR_FRAMES = { straight: 0, turnRight: 1, merge: 2, fastStraight: 8, fastTurnRight: 9, fastMerge: 10 };
+const CRUSHER_FRAMES = { plain: 21, topSegmentStart: 23, conveyor: 28, bottomSegmentStart: 30 };
 const TURN_TRANSFORMS = {
   "east:north": { frame: CONVEYOR_FRAMES.turnRight, rotation: Math.PI, flipX: false },
   "north:west": { frame: CONVEYOR_FRAMES.turnRight, rotation: Math.PI / 2, flipX: false },
@@ -159,6 +160,7 @@ function drawBoard(scene, state) {
         if (tile.conveyor) boardContainer.add(addConveyorTile(scene, tile.conveyor, px, py, tileSize));
         if (tile.rotator) boardContainer.add(addRotatorTile(scene, tile.rotator, px, py, tileSize));
         if (tile.laser) boardContainer.add(addLaserTile(scene, tile.laser, px, py, tileSize));
+        if (tile.crusher) boardContainer.add(addCrusherTile(scene, tile.crusher, px, py, tileSize));
         if (tile.walls) boardContainer.add(addWallTiles(scene, tile.walls, px, py, tileSize));
       }
       boardContainer.add(scene.add.rectangle(px, py, tileSize, tileSize).setOrigin(0).setStrokeStyle(1, 0x3a424a));
@@ -385,6 +387,37 @@ function addLaserTile(scene, laser, px, py, tileSize) {
   return items;
 }
 
+function addCrusherTile(scene, crusher, px, py, tileSize) {
+  if (!scene.textures.exists("crusher_tiles")) return [];
+  const items = [];
+  const rotation = crusher.variant === "conveyor" ? rotationFromEast(crusher.direction || "east") : 0;
+  const frame = crusher.variant === "conveyor" ? CRUSHER_FRAMES.conveyor : CRUSHER_FRAMES.plain;
+  const sprite = scene.add.image(px + tileSize / 2, py + tileSize / 2, "crusher_tiles", frame);
+  sprite.setDisplaySize(tileSize, tileSize);
+  sprite.rotation = rotation;
+  items.push(sprite);
+  for (const marker of crusherSegmentMarkers(crusher.activeRegisters)) {
+    const icon = scene.add.image(px + tileSize / 2, py + tileSize / 2, "crusher_tiles", marker.frame);
+    icon.setDisplaySize(tileSize, tileSize);
+    icon.rotation = rotation;
+    items.push(icon);
+  }
+  return items;
+}
+
+function crusherSegmentMarkers(activeRegisters = []) {
+  return normalizeCrusherRegisters(activeRegisters).map((register, index) => ({
+    register,
+    frame: index === 0 ? CRUSHER_FRAMES.topSegmentStart + register - 1 : CRUSHER_FRAMES.bottomSegmentStart + register - 1
+  }));
+}
+
+function normalizeCrusherRegisters(activeRegisters = []) {
+  return [...new Set(activeRegisters.map(Number).filter((item) => Number.isInteger(item) && item >= 1 && item <= 5))]
+    .sort((a, b) => a - b)
+    .slice(0, 2);
+}
+
 function directionRotationFromNorth(direction) {
   return { north: 0, east: Math.PI / 2, south: Math.PI, west: -Math.PI / 2 }[direction] || 0;
 }
@@ -406,6 +439,14 @@ function wallRotation(wall) {
 }
 
 function conveyorTransform(conveyor) {
+  if (conveyor.shape === "merge") {
+    return {
+      frame: conveyor.type === "fast" ? CONVEYOR_FRAMES.fastMerge : CONVEYOR_FRAMES.merge,
+      rotation: rotationFromEast(conveyor.direction || "east"),
+      flipX: false,
+      flipY: Boolean(conveyor.flipped)
+    };
+  }
   if (conveyor.shape === "turn" || conveyor.turn) return conveyorTurnTransform(conveyor);
   return {
     frame: conveyor.type === "fast" ? CONVEYOR_FRAMES.fastStraight : CONVEYOR_FRAMES.straight,
@@ -425,6 +466,10 @@ function conveyorTurnTransform(conveyor) {
 
 function rotationFromWest(direction) {
   return { west: 0, north: Math.PI / 2, east: Math.PI, south: -Math.PI / 2 }[direction] || 0;
+}
+
+function rotationFromEast(direction) {
+  return { east: 0, south: Math.PI / 2, west: Math.PI, north: -Math.PI / 2 }[direction] || 0;
 }
 
 function turnDirectionForFrameOne(direction, turn) {
@@ -839,6 +884,7 @@ async function initPlayerInterface() {
         this.load.spritesheet("wall_tiles", `${basePath}/shared/assets/images/walls.png`, { frameWidth: 66, frameHeight: 66 });
         this.load.spritesheet("zone_tiles", `${basePath}/shared/assets/images/zones.png`, { frameWidth: 66, frameHeight: 66 });
         this.load.spritesheet("laser_tiles", `${basePath}/shared/assets/images/lasers.png`, { frameWidth: 66, frameHeight: 66 });
+        this.load.spritesheet("crusher_tiles", `${basePath}/shared/assets/images/crush.png`, { frameWidth: 66, frameHeight: 66 });
       },
       create() {
         playerScene = this;

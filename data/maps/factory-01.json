@@ -13,14 +13,18 @@
     { "x": 9, "y": 11, "floor": "normal", "spawn": 6, "direction": "west" },
     { "x": 10, "y": 11, "floor": "normal", "spawn": 7, "direction": "west" },
     { "x": 11, "y": 11, "floor": "normal", "spawn": 8, "direction": "west" },
+    { "x": 1, "y": 1, "floor": "normal", "conveyor": { "type": "normal", "direction": "east" } },
+    { "x": 2, "y": 1, "floor": "normal", "conveyor": { "type": "normal", "shape": "merge", "inputs": ["west", "south"], "direction": "east" } },
+    { "x": 3, "y": 1, "floor": "normal", "conveyor": { "type": "fast", "shape": "merge", "inputs": ["west", "south"], "direction": "east" } },
+    { "x": 2, "y": 2, "floor": "normal", "conveyor": { "type": "normal", "direction": "north" } },
     { "x": 3, "y": 3, "floor": "normal", "walls": ["north", "west"], "conveyor": { "type": "fast", "shape": "turn", "from": "east", "turn": "left" } },
-    { "x": 4, "y": 3, "floor": "normal", "walls": ["north"], "conveyor": { "type": "fast", "direction": "west" } },
+    { "x": 4, "y": 3, "floor": "normal", "walls": ["north"], "conveyor": { "type": "fast", "direction": "west" }, "crusher": { "variant": "conveyor", "direction": "west", "activeRegisters": [2, 4] } },
     { "x": 5, "y": 3, "floor": "normal", "walls": ["north", "east"], "conveyor": { "type": "fast", "shape": "turn", "from": "south", "turn": "left" } },
-    { "x": 3, "y": 4, "floor": "normal", "walls": ["west"], "conveyor": { "type": "fast", "direction": "south" } },
+    { "x": 3, "y": 4, "floor": "normal", "walls": ["west"], "conveyor": { "type": "fast", "direction": "south" }, "crusher": { "variant": "conveyor", "direction": "south", "activeRegisters": [2, 4] } },
     { "x": 4, "y": 4, "floor": "pit" },
-    { "x": 5, "y": 4, "floor": "normal", "walls": ["east"], "conveyor": { "type": "fast", "direction": "north" } },
+    { "x": 5, "y": 4, "floor": "normal", "walls": ["east"], "conveyor": { "type": "fast", "direction": "north" }, "crusher": { "variant": "conveyor", "direction": "north", "activeRegisters": [2, 4] } },
     { "x": 3, "y": 5, "floor": "normal", "walls": ["south", "west"], "conveyor": { "type": "fast", "shape": "turn", "from": "north", "turn": "left" } },
-    { "x": 4, "y": 5, "floor": "normal", "walls": ["south"], "conveyor": { "type": "fast", "direction": "east" } },
+    { "x": 4, "y": 5, "floor": "normal", "walls": ["south"], "conveyor": { "type": "fast", "direction": "east" }, "crusher": { "variant": "conveyor", "direction": "east", "activeRegisters": [2, 4] } },
     { "x": 5, "y": 5, "floor": "normal", "walls": ["south", "east"], "conveyor": { "type": "fast", "shape": "turn", "from": "west", "turn": "left" } },
     { "x": 7, "y": 3, "floor": "normal", "rotator": { "direction": "cw" } },
     { "x": 8, "y": 3, "floor": "normal", "rotator": { "direction": "ccw" } },
@@ -38,6 +42,6 @@
     { "x": 2, "y": 5, "floor": "normal", "checkpoint": 1 },
     { "x": 9, "y": 5, "floor": "normal", "checkpoint": 2 },
     { "x": 5, "y": 2, "floor": "normal", "pusher": { "direction": "south", "activeRegisters": [2, 4] } },
-    { "x": 6, "y": 9, "floor": "normal", "crusher": { "activeRegisters": [1, 3, 5] } }
+    { "x": 6, "y": 9, "floor": "normal", "crusher": { "variant": "plain", "activeRegisters": [2, 4] } }
   ]
 }

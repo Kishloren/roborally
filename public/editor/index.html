@@ -14,7 +14,21 @@
           <h1>RoboRally</h1>
           <span>Backoffice</span>
         </header>
-        <button id="new-map" class="primary">Nouvelle carte</button>
+        <section class="segment-panel">
+          <h2>Segment</h2>
+          <div id="segment-selector" class="segment-selector" role="radiogroup" aria-label="Segment courant">
+            <label><input type="radio" name="current-segment" value="1" checked /><span>1</span></label>
+            <label><input type="radio" name="current-segment" value="2" /><span>2</span></label>
+            <label><input type="radio" name="current-segment" value="3" /><span>3</span></label>
+            <label><input type="radio" name="current-segment" value="4" /><span>4</span></label>
+            <label><input type="radio" name="current-segment" value="5" /><span>5</span></label>
+          </div>
+        </section>
+        <section class="order-panel">
+          <h2>Ordres</h2>
+          <div id="order-card-list" class="order-card-list" aria-label="Cartes d'ordres de test"></div>
+        </section>
+        <button id="new-map" class="primary">Reinitialiser test</button>
         <div id="maps-list" class="maps-list"></div>
       </aside>
 
@@ -44,6 +58,30 @@
           <p>Glisser sur la grille. R tourne, F inverse, Suppr efface la case active.</p>
         </header>
         <div id="tool-list" class="tool-list"></div>
+        <section class="stack-panel">
+          <header>
+            <h2>Case</h2>
+            <p id="active-cell-label">Aucune case</p>
+          </header>
+          <div class="stack-actions">
+            <button id="copy-layer" title="Copier l'element selectionne">Copier</button>
+            <button id="cut-layer" title="Couper l'element selectionne">Couper</button>
+            <button id="paste-layer" title="Coller sur la case active">Coller</button>
+          </div>
+          <div id="stack-list" class="stack-list"></div>
+        </section>
+        <section class="test-panel">
+          <header>
+            <h2>Robots</h2>
+            <p>Glisser sur la grille. R tourne le robot selectionne.</p>
+          </header>
+          <label class="test-check">
+            <input id="test-blank-board" type="checkbox" checked />
+            Plateau vierge
+          </label>
+          <div id="test-robot-list" class="robot-list"></div>
+          <p id="test-status">Aucun robot</p>
+        </section>
       </aside>
     </main>
 

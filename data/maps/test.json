@@ -1,8 +1,53 @@
 {
   "id": "test",
   "name": "test",
-  "width": 12,
+  "width": 16,
   "height": 12,
   "tileSize": 72,
-  "tiles": []
+  "tiles": [
+    { "x": 1, "y": 2, "floor": "normal", "conveyor": { "type": "normal", "direction": "north" } },
+    { "x": 2, "y": 2, "floor": "normal", "conveyor": { "type": "normal", "direction": "east" } },
+    { "x": 3, "y": 2, "floor": "normal", "conveyor": { "type": "normal", "direction": "south" } },
+    { "x": 4, "y": 2, "floor": "normal", "conveyor": { "type": "normal", "direction": "west" } },
+    { "x": 6, "y": 2, "floor": "normal", "conveyor": { "type": "fast", "direction": "north" } },
+    { "x": 7, "y": 2, "floor": "normal", "conveyor": { "type": "fast", "direction": "east" } },
+    { "x": 8, "y": 2, "floor": "normal", "conveyor": { "type": "fast", "direction": "south" } },
+    { "x": 9, "y": 2, "floor": "normal", "conveyor": { "type": "fast", "direction": "west" } },
+
+    { "x": 1, "y": 4, "floor": "normal", "conveyor": { "type": "normal", "shape": "turn", "from": "east", "turn": "right" } },
+    { "x": 2, "y": 4, "floor": "normal", "conveyor": { "type": "normal", "shape": "turn", "from": "north", "turn": "right" } },
+    { "x": 3, "y": 4, "floor": "normal", "conveyor": { "type": "normal", "shape": "turn", "from": "west", "turn": "right" } },
+    { "x": 4, "y": 4, "floor": "normal", "conveyor": { "type": "normal", "shape": "turn", "from": "south", "turn": "right" } },
+    { "x": 6, "y": 4, "floor": "normal", "conveyor": { "type": "normal", "shape": "turn", "from": "east", "turn": "left" } },
+    { "x": 7, "y": 4, "floor": "normal", "conveyor": { "type": "normal", "shape": "turn", "from": "south", "turn": "left" } },
+    { "x": 8, "y": 4, "floor": "normal", "conveyor": { "type": "normal", "shape": "turn", "from": "west", "turn": "left" } },
+    { "x": 9, "y": 4, "floor": "normal", "conveyor": { "type": "normal", "shape": "turn", "from": "north", "turn": "left" } },
+
+    { "x": 1, "y": 5, "floor": "normal", "conveyor": { "type": "fast", "shape": "turn", "from": "east", "turn": "right" } },
+    { "x": 2, "y": 5, "floor": "normal", "conveyor": { "type": "fast", "shape": "turn", "from": "north", "turn": "right" } },
+    { "x": 3, "y": 5, "floor": "normal", "conveyor": { "type": "fast", "shape": "turn", "from": "west", "turn": "right" } },
+    { "x": 4, "y": 5, "floor": "normal", "conveyor": { "type": "fast", "shape": "turn", "from": "south", "turn": "right" } },
+    { "x": 6, "y": 5, "floor": "normal", "conveyor": { "type": "fast", "shape": "turn", "from": "east", "turn": "left" } },
+    { "x": 7, "y": 5, "floor": "normal", "conveyor": { "type": "fast", "shape": "turn", "from": "south", "turn": "left" } },
+    { "x": 8, "y": 5, "floor": "normal", "conveyor": { "type": "fast", "shape": "turn", "from": "west", "turn": "left" } },
+    { "x": 9, "y": 5, "floor": "normal", "conveyor": { "type": "fast", "shape": "turn", "from": "north", "turn": "left" } },
+
+    { "x": 1, "y": 7, "floor": "normal", "conveyor": { "type": "normal", "shape": "merge", "inputs": ["west", "south"], "direction": "east", "flipped": false } },
+    { "x": 2, "y": 7, "floor": "normal", "conveyor": { "type": "normal", "shape": "merge", "inputs": ["west", "north"], "direction": "east", "flipped": true } },
+    { "x": 3, "y": 7, "floor": "normal", "conveyor": { "type": "normal", "shape": "merge", "inputs": ["north", "west"], "direction": "south", "flipped": false } },
+    { "x": 4, "y": 7, "floor": "normal", "conveyor": { "type": "normal", "shape": "merge", "inputs": ["north", "east"], "direction": "south", "flipped": true } },
+    { "x": 6, "y": 7, "floor": "normal", "conveyor": { "type": "normal", "shape": "merge", "inputs": ["east", "north"], "direction": "west", "flipped": false } },
+    { "x": 7, "y": 7, "floor": "normal", "conveyor": { "type": "normal", "shape": "merge", "inputs": ["east", "south"], "direction": "west", "flipped": true } },
+    { "x": 8, "y": 7, "floor": "normal", "conveyor": { "type": "normal", "shape": "merge", "inputs": ["south", "east"], "direction": "north", "flipped": false } },
+    { "x": 9, "y": 7, "floor": "normal", "conveyor": { "type": "normal", "shape": "merge", "inputs": ["south", "west"], "direction": "north", "flipped": true } },
+
+    { "x": 1, "y": 8, "floor": "normal", "conveyor": { "type": "fast", "shape": "merge", "inputs": ["west", "south"], "direction": "east", "flipped": false } },
+    { "x": 2, "y": 8, "floor": "normal", "conveyor": { "type": "fast", "shape": "merge", "inputs": ["west", "north"], "direction": "east", "flipped": true } },
+    { "x": 3, "y": 8, "floor": "normal", "conveyor": { "type": "fast", "shape": "merge", "inputs": ["north", "west"], "direction": "south", "flipped": false } },
+    { "x": 4, "y": 8, "floor": "normal", "conveyor": { "type": "fast", "shape": "merge", "inputs": ["north", "east"], "direction": "south", "flipped": true } },
+    { "x": 6, "y": 8, "floor": "normal", "conveyor": { "type": "fast", "shape": "merge", "inputs": ["east", "north"], "direction": "west", "flipped": false } },
+    { "x": 7, "y": 8, "floor": "normal", "conveyor": { "type": "fast", "shape": "merge", "inputs": ["east", "south"], "direction": "west", "flipped": true } },
+    { "x": 8, "y": 8, "floor": "normal", "conveyor": { "type": "fast", "shape": "merge", "inputs": ["south", "east"], "direction": "north", "flipped": false } },
+    { "x": 9, "y": 8, "floor": "normal", "conveyor": { "type": "fast", "shape": "merge", "inputs": ["south", "west"], "direction": "north", "flipped": true } }
+  ]
 }

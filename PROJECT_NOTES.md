@@ -1,6 +1,6 @@
 # RoboRally - Notes de reprise
 
-Date de derniere mise a jour : 2026-05-18
+Date de derniere mise a jour : 2026-05-20
 
 ## Objectif du projet
 
@@ -54,6 +54,114 @@ Le deck contient 84 cartes :
 
 Definition : `src/game/cards.js`.
 
+## Regles validees
+
+Objectif :
+
+- le jeu est une course sur une carte ;
+- tous les robots partent de la meme case de depart ;
+- une carte contient une seule case depart ;
+- les robots doivent valider les checkpoints/etapes dans l'ordre ;
+- le premier robot qui valide la derniere etape gagne.
+
+Etat initial des robots :
+
+- chaque robot commence avec `3` vies ;
+- chaque robot commence avec `9` points de vie, donc `0` degat ;
+- chaque robot dispose d'un laser frontal ;
+- au depart, les robots sont holographiques pour permettre a plusieurs robots d'occuper la meme case.
+
+Hologrammes :
+
+- un robot holographique subit les effets du plateau ;
+- un robot holographique n'interagit pas avec les autres robots : pas de tir recu, pas de poussee, pas de blocage physique ;
+- un robot holographique peut valider un checkpoint ;
+- un robot holographique peut reparer sur une case Repair ;
+- a la fin d'un tour, un robot holographique seul sur sa case devient physique.
+
+Tours et segments :
+
+- un tour contient `5` segments ;
+- au debut d'un tour, chaque joueur recoit `9 - degats` cartes ;
+- le joueur programme `5` registres avec les cartes disponibles et les registres non bloques ;
+- pour chaque segment :
+  - les robots executent leur carte de programmation par priorite decroissante ;
+  - les elements du plateau agissent ;
+  - les lasers tirent.
+
+Degats, registres et reparations :
+
+- un robot a `9` points de vie ;
+- il est detruit quand il atteint `10` degats ;
+- a `9` degats, il n'est pas detruit mais ne recoit aucune carte ;
+- au-dessus de `4` degats, les derniers registres sont bloques ;
+- formule actuelle : `blockedRegisters = max(0, degats - 4)`, bloques depuis le registre 5 vers le registre 1 ;
+- exemple : `6` degats donne `3` cartes et bloque les registres 4 et 5 ;
+- un registre bloque conserve sa carte precedente ;
+- en fin de tour, un robot sur Repair 1 repare `1` degat ;
+- en fin de tour, un robot sur Repair 2 repare `2` degats.
+
+Destruction et respawn :
+
+- un robot detruit perd `1` vie ;
+- s'il n'a plus de vie, il est elimine definitivement ;
+- sinon il respawn au depart ou au dernier checkpoint valide ;
+- il respawn sous forme holographique ;
+- il respawn avec `2` degats.
+
+Deplacements, murs, trous :
+
+- un robot ne traverse pas les murs ;
+- lors d'un deplacement, un robot physique pousse les robots physiques devant lui ;
+- si la chaine de poussee est bloquee, le deplacement initial est annule ;
+- un robot holographique n'est pas pousse et ne bloque pas ;
+- un robot qui arrive sur un trou ou passe au-dessus d'un trou est immediatement detruit.
+
+Lasers :
+
+- chaque robot physique tire un laser frontal pendant la phase lasers ;
+- un laser ne traverse pas les murs ;
+- un laser s'arrete au premier robot physique touche ;
+- un laser qui touche un robot inflige `1` degat ;
+- un robot holographique n'est pas touche par les lasers.
+
+Elements de plateau pris en compte dans le premier moteur :
+
+- convoyeurs ;
+- murs ;
+- trous.
+
+Les autres elements du plateau seront integres plus tard.
+
+Convoyeurs :
+
+- apres les deplacements intrinseques des robots, les convoyeurs rapides agissent une premiere fois seuls ;
+- ensuite les convoyeurs rapides et normaux agissent ensemble dans une deuxieme vague ;
+- les convoyeurs d'une meme vague sont simultanes ;
+- si deux robots deplaces par la meme vague de convoyeurs veulent arriver sur la meme case, les deux deplacements sont annules ;
+- si un robot deplace par convoyeur arrive sur une case occupee par un robot statique, il pousse ce robot selon les regles normales de poussee ;
+- si cette poussee est bloquee, le deplacement par convoyeur est bloque ;
+- un convoyeur rectiligne transporte vers sa sortie ;
+- un virage atteint par une carte ou une poussee transporte vers sa sortie sans rotation du robot ;
+- si un convoyeur deplace un robot sur une case de virage, la rotation du virage est appliquee sur cette case, sans nouvelle translation ;
+- visuellement, une translation par convoyeur suivie d'une rotation sur la case d'arrivee est animee simultanement en `1` seconde ;
+- un convoyeur `2 entrees` se comporte comme un rectiligne quand un robot y entre par carte ou poussee ;
+- quand un robot entre sur un `2 entrees` par convoyeur via la deuxieme entree du sigle, la rotation d'entree est appliquee pendant la translation ;
+- sinon, pas de rotation sur le `2 entrees`.
+
+Display et interface joueur :
+
+- le display commence par afficher la liste des plateaux disponibles ;
+- apres choix du plateau, le display affiche un QR code ;
+- les joueurs scannent le QR code, choisissent leur robot et saisissent leur pseudo ;
+- le display affiche une colonne avec robot, pseudo, progression checkpoints et points de vie ;
+- les interfaces joueurs repliquent le plateau ;
+- les robots clignotent lentement par alpha avec une periode de `2` secondes ;
+- un robot holographique apparait ethere, en greyscale, avec un outline vif dans la couleur principale du robot ;
+- si plusieurs robots sont sur la meme case, ils apparaissent a tour de role ;
+- un joueur peut alterner entre la vue globale de tous les robots et la vue limitee a son propre robot ;
+- le plateau joueur est scrollable et zoomable.
+
 ## Interface joueur
 
 La page joueur est dans :
@@ -102,6 +210,7 @@ Fichiers presents :
 - `cartes.png` : spritesheet des cartes, 7 images de `310x460` ;
 - `sols.png` : sols, frames de `66x66` ;
 - `conv.png` : convoyeurs, frames de `66x66` ;
+- `shared/data/conveyors.json` : table explicite des correspondances de virages convoyeurs ;
 - `pits.png` : trous, frames de `66x66` ;
 - `walls.png`
 - `lasers.png`
@@ -154,17 +263,29 @@ Panneau de test backoffice :
 - test n° 1 : cliquer une carte d'ordre applique immediatement son effet au robot pose/selectionne ;
 - pour ce premier test, les cartes gerent uniquement rotation et deplacement sur plateau vierge, avec arret au bord de map ;
 - chaque effet de carte anime le robot pendant `1000ms` avec easing `Cubic.easeInOut`, par translation et/ou rotation ;
+- les animations de deplacement ne creent pas de tween de rotation quand l'orientation du robot ne change pas, pour eviter les tours parasites notamment en direction ouest ;
+- les tweens de rotation calculent leur cible depuis la rotation reellement stockee par le sprite Phaser, afin d'eviter le passage `pi/-pi` qui provoquait un `3/4` de tour depuis l'ouest ;
 - test convoyeurs lents : apres une carte d'ordre, si le robot est sur un convoyeur normal, le backoffice applique un transport d'une case en second effet anime `1000ms` ;
 - les convoyeurs lents droits et a deux entrees transportent vers `conveyor.direction` ; les virages transportent vers la sortie et tournent le robot d'un quart de tour ;
+- regle source des virages : la rotation du robot sur un virage n'est appliquee que si la source du mouvement est `conveyor` ; pour les futurs mouvements `card` ou `push`, le virage applique seulement la translation vers sa sortie ;
+- les mouvements par carte amènent le robot sur la case, puis le convoyeur de cette case agit comme phase separee avec la source `card` : un virage applique sa translation de sortie sans rotation du robot ;
+- si un convoyeur deplace le robot sur une case de virage, la rotation du virage est appliquee sur cette case comme une phase separee, sans nouvelle translation ;
+- visuellement, quand une phase convoyeur implique translation puis rotation sur un virage, la translation et la rotation sont animees simultanement en une seule seconde ;
+- convoyeurs `2 entrees` : un robot qui y entre par carte ou poussee suit simplement la sortie finale ; quand il y entre par convoyeur par la deuxieme entree du sigle, il subit une rotation d'entree pendant la translation.
+- ordre des convoyeurs par registre : apres les deplacements intrinseques, les convoyeurs rapides agissent seuls une premiere fois, puis les convoyeurs rapides et normaux agissent ensemble dans une seconde vague.
+- convention de rotation logique : `+1` = droite/horaire, `-1` = gauche/antihoraire ; les virages `turn: "right"` utilisent donc `+1`.
 - le backoffice force l'utilisation de la map JSON `test`, nommee `test`, en `12x12` vide ;
 - le bouton de creation de carte sert a reinitialiser cette map `test` ;
-- mode `Plateau vierge` active par defaut pour isoler les tests de commandes ;
+- les elements poses sur la map `test` restent visibles et actifs pendant les tests ;
 - affiche les 8 frames de `robots.png` comme elements drag/droppables ;
 - glisser un robot sur la grille le pose ou le deplace ;
 - le drag robot conserve l'element DOM pendant `dragstart` et declare aussi un fallback `text/plain` `robot:n` pour fiabiliser le drop ;
 - le clic sur un robot deja pose le selectionne via une zone Phaser interactive sur la case du robot ;
+- sur une case contenant un element de plateau, `R/F/Suppr` ciblent d'abord la couche selectionnee dans la pile avant le robot ;
 - `R` tourne le robot selectionne ;
 - prochaine etape : reappliquer les cartes de programmation au robot selectionne sur ce socle plus simple.
+- la map `test` affiche de nouveau un catalogue de convoyeurs ; les libelles rouges sont derives du JSON par `conveyorDebugLabel`, afin d'eviter les divergences entre etiquette manuelle et modele.
+- les virages ne sont plus calcules implicitement cote sprite : `conveyors.json` fige `label`, `from`, `to`, `turn`, `spriteRotation` et `spriteFlipX`.
 
 Elements actuellement posables :
 
@@ -274,6 +395,15 @@ Reglage valide et verrouille pour le debug actuel :
 
 Les segments droits utilisent `conveyor.direction`.
 
+Convention de nommage de discussion pour la suite :
+
+- premiere lettre : type de forme, `R` pour rectiligne, `V` pour virage, `3` pour convoyeur a trois entrees ;
+- deuxieme lettre : vitesse, `S` pour simple/lent, `R` pour rapide ;
+- suffixe directionnel : directions cardinales abregees `N`, `E`, `S`, `W` ;
+- convoyeur rectiligne simple oriente nord : `RSN` ;
+- convoyeur rapide virage est vers nord : `VREN` ;
+- convoyeur trois entrees est+sud vers nord : `3ESN`.
+
 Mapping des segments droits :
 
 - `west` : rotation `0` ;
@@ -283,9 +413,9 @@ Mapping des segments droits :
 
 Mapping valide pour les virages horaires autour du premier trou :
 
-- `east -> north` : frame `1`, rotation `180 degres` ;
+- `east -> north` : frame `1`, rotation `0 degre` ;
 - `north -> west` : frame `1`, rotation `90 degres` sens trigo ;
-- `west -> south` : frame `1`, rotation `0 degre` ;
+- `west -> south` : frame `1`, rotation `180 degres` ;
 - `south -> east` : frame `1`, rotation `270 degres` sens trigo.
 
 Important : ne pas reutiliser les autres frames de virage de `conv.png` tant que leur convention n'a pas ete explicitement validee.

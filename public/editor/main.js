@@ -15,7 +15,6 @@ const cutLayerButton = document.querySelector("#cut-layer");
 const pasteLayerButton = document.querySelector("#paste-layer");
 const segmentSelector = document.querySelector("#segment-selector");
 const orderCardList = document.querySelector("#order-card-list");
-const testBlankBoardInput = document.querySelector("#test-blank-board");
 const testRobotList = document.querySelector("#test-robot-list");
 const testStatus = document.querySelector("#test-status");
 
@@ -95,9 +94,11 @@ let lastTestAction = "";
 let robotAnimation = null;
 let robotAnimationQueue = [];
 let currentSegment = 1;
+let conveyorConfig = { turns: [] };
 const imageInfo = new Map();
 
 await loadPhaser();
+await loadConveyorConfig();
 await loadSpriteInfo();
 renderToolList();
 renderTestRobotOptions();
@@ -116,7 +117,6 @@ copyLayerButton.addEventListener("click", copySelectedLayer);
 cutLayerButton.addEventListener("click", cutSelectedLayer);
 pasteLayerButton.addEventListener("click", pasteClipboardLayer);
 segmentSelector.addEventListener("change", handleSegmentChange);
-testBlankBoardInput.addEventListener("change", renderMap);
 window.addEventListener("keydown", handleKeyDown);
 
 stage.addEventListener("dragover", handleStageDragOver);
@@ -403,7 +403,7 @@ function renderMap() {
   tileSize = Math.max(22, Math.min(66, tileSize));
   offsetX = Math.floor((width - currentMap.width * tileSize) / 2);
   offsetY = Math.floor((height - currentMap.height * tileSize) / 2);
-  const tiles = new Map((testBlankBoardInput.checked ? [] : currentMap.tiles).map((tile) => [`${tile.x},${tile.y}`, tile]));
+  const tiles = new Map(currentMap.tiles.map((tile) => [`${tile.x},${tile.y}`, tile]));
 
   scene.add.rectangle(0, 0, width, height, 0x171c20).setOrigin(0);
   for (let y = 0; y < currentMap.height; y += 1) {
@@ -447,6 +447,17 @@ function drawTile(scene, tile, px, py) {
       color: "#101316"
     }).setOrigin(0.5);
   }
+  const debugLabel = tile.debugLabel || tileDebugLabel(tile);
+  if (debugLabel) {
+    scene.add.text(px + tileSize / 2, py + tileSize / 2, debugLabel, {
+      fontFamily: "Arial",
+      fontSize: `${Math.max(10, Math.round(tileSize * 0.22))}px`,
+      fontStyle: "bold",
+      color: "#ff1f2d",
+      stroke: "#ffffff",
+      strokeThickness: Math.max(2, Math.round(tileSize * 0.035))
+    }).setOrigin(0.5);
+  }
 }
 
 function addFloor(scene, tile, px, py) {
@@ -477,9 +488,9 @@ function addConveyor(scene, conveyor, px, py) {
   const turn = conveyor.type === "fast" ? CONVEYOR_FRAMES.fastTurnRight : CONVEYOR_FRAMES.turnRight;
   const sprite = scene.add.image(px + tileSize / 2, py + tileSize / 2, "conveyor_tiles", conveyor.shape === "turn" ? turn : straight);
   sprite.setDisplaySize(tileSize, tileSize);
-  sprite.rotation = conveyor.shape === "turn" ? turnRotation(conveyor.from || "east") : rotationFromWest(conveyor.direction || "west");
+  sprite.rotation = conveyor.shape === "turn" ? conveyorTurnSpriteRotation(conveyor) : rotationFromWest(conveyor.direction || "west");
   if (conveyor.shape === "turn") {
-    sprite.setFlipX(conveyor.turn === "left");
+    sprite.setFlipX(conveyorTurnSpriteFlipX(conveyor));
     sprite.setFlipY(conveyor.type === "fast");
   }
 }
@@ -587,7 +598,7 @@ function drawAnimatedTestRobot(scene, robot) {
   const from = boardCellCenter(animation.from.x, animation.from.y);
   const to = boardCellCenter(animation.to.x, animation.to.y);
   const fromRotation = rotationFromEast(animation.from.direction);
-  const toRotation = rotationForTween(fromRotation, rotationFromEast(animation.to.direction));
+  const shouldRotate = animation.from.direction !== animation.to.direction;
   const container = scene.add.container(from.x, from.y);
   let body = null;
   if (scene.textures.exists("robot_tiles")) {
@@ -597,29 +608,33 @@ function drawAnimatedTestRobot(scene, robot) {
     body = scene.add.triangle(0, 0, -size * 0.35, -size * 0.25, -size * 0.35, size * 0.25, size * 0.35, 0, 0xf2c14e);
   }
   body.rotation = fromRotation;
+  const toRotation = shouldRotate ? rotationForTween(body.rotation, rotationFromEast(animation.to.direction), animation.turn) : body.rotation;
   container.add(body);
   if (robot.id === selectedTestRobotId) {
     container.add(scene.add.circle(0, 0, size * 0.55).setStrokeStyle(3, 0xf2c14e));
   }
+  const completeAnimation = () => {
+    if (robotAnimation === animation) {
+      robotAnimation = robotAnimationQueue.shift() || null;
+      renderMap();
+    }
+  };
   scene.tweens.add({
     targets: container,
     x: to.x,
     y: to.y,
     duration: TEST_ANIMATION_DURATION,
-    ease: TEST_ANIMATION_EASE
-  });
-  scene.tweens.add({
-    targets: body,
-    rotation: toRotation,
-    duration: TEST_ANIMATION_DURATION,
     ease: TEST_ANIMATION_EASE,
-    onComplete: () => {
-      if (robotAnimation === animation) {
-        robotAnimation = robotAnimationQueue.shift() || null;
-        renderMap();
-      }
-    }
+    onComplete: completeAnimation
   });
+  if (shouldRotate) {
+    scene.tweens.add({
+      targets: body,
+      rotation: toRotation,
+      duration: TEST_ANIMATION_DURATION,
+      ease: TEST_ANIMATION_EASE
+    });
+  }
 }
 
 function applyTool(x, y) {
@@ -751,6 +766,7 @@ function handleKeyDown(event) {
   }
   if (key === "r") {
     event.preventDefault();
+    if (hasSelectedBoardLayer() && rotateActiveTile()) return;
     if (rotateSelectedTestRobot()) return;
     rotateActiveTile();
     return;
@@ -763,7 +779,7 @@ function handleKeyDown(event) {
 
 function rotateActiveTile() {
   const tile = activeTile();
-  if (!tile) return;
+  if (!tile) return false;
   const layer = selectedLayerId || firstLayerId(tile);
   if (layer === "conveyor" && tile.conveyor?.shape === "merge") {
     tile.conveyor.direction = nextDirection(tile.conveyor.direction || "east");
@@ -776,14 +792,15 @@ function rotateActiveTile() {
   else if (layer === "pusher" && tile.pusher?.direction) tile.pusher.direction = nextDirection(tile.pusher.direction);
   else if (layer === "crusher" && tile.crusher?.variant === "conveyor") tile.crusher.direction = nextDirection(tile.crusher.direction || "east");
   else if (layer === "zone" && tile.direction) tile.direction = nextDirection(tile.direction);
-  else return;
+  else return false;
   renderMap();
   scheduleSave();
+  return true;
 }
 
 function flipActiveTile() {
   const tile = activeTile();
-  if (!tile) return;
+  if (!tile) return false;
   let changed = false;
   const layer = selectedLayerId || firstLayerId(tile);
   if (layer === "conveyor" && tile.conveyor?.shape === "merge") {
@@ -819,13 +836,18 @@ function flipActiveTile() {
     tile.direction = oppositeDirection(tile.direction);
     changed = true;
   }
-  if (!changed) return;
+  if (!changed) return false;
   renderMap();
   scheduleSave();
+  return true;
 }
 
 function activeTile() {
   return currentMap?.tiles.find((tile) => tile.x === activeCell?.x && tile.y === activeCell?.y) || null;
+}
+
+function hasSelectedBoardLayer() {
+  return Boolean(activeTile() && selectedLayerId);
 }
 
 function tileAt(x, y) {
@@ -1089,11 +1111,11 @@ function applyOrderCard(card) {
     lastTestAction = `${card.type}: ${moved} case${moved > 1 ? "s" : ""}`;
   }
   const afterOrder = { x: robot.x, y: robot.y, direction: robot.direction };
-  const animations = [robotAnimationStep(robot.id, from, afterOrder)];
-  const conveyor = applySlowConveyor(robot);
-  if (conveyor.applied) {
-    animations.push(robotAnimationStep(robot.id, afterOrder, { x: robot.x, y: robot.y, direction: robot.direction }));
-    lastTestAction += ` + convoyeur lent ${conveyor.label}`;
+  const animations = [robotAnimationStep(robot.id, from, afterOrder, card.action === "rotate" ? card.turn : 0)];
+  const conveyorWaves = applyConveyorWaves(robot, card.action === "move" ? "card" : "conveyor");
+  for (const wave of conveyorWaves) {
+    animations.push(...wave.steps.map((step) => robotAnimationStep(robot.id, step.from, step.to, step.turn)));
+    lastTestAction += ` + ${wave.label}`;
   }
   queueRobotAnimations(animations);
   activeCell = { x: robot.x, y: robot.y };
@@ -1116,24 +1138,46 @@ function moveTestRobot(robot, distance) {
   return moved;
 }
 
-function applySlowConveyor(robot) {
-  const tile = tileAt(robot.x, robot.y);
-  const conveyor = tile?.conveyor;
-  if (!conveyor || conveyor.type === "fast") return { applied: false, label: "" };
-  const output = conveyorOutputDirection(conveyor);
-  const next = nextCell(robot.x, robot.y, output);
-  if (!isInsideMap(next.x, next.y)) return { applied: false, label: "bloque" };
-  robot.x = next.x;
-  robot.y = next.y;
-  if (conveyor.shape === "turn") {
-    robot.direction = rotateDirection(robot.direction, conveyorTurnDelta(conveyor));
-  }
-  return { applied: true, label: conveyor.shape === "turn" ? `vers ${output} avec rotation` : `vers ${output}` };
+function applyConveyorWaves(robot, source) {
+  return [
+    applyConveyorWave(robot, source, ["fast"], "convoyeurs rapides"),
+    applyConveyorWave(robot, source, ["fast", "normal"], "convoyeurs")
+  ].filter((wave) => wave.applied);
 }
 
-function robotAnimationStep(robotId, from, to) {
+function applyConveyorWave(robot, source, types, label) {
+  const tile = tileAt(robot.x, robot.y);
+  const conveyor = tile?.conveyor;
+  if (!conveyor || !types.includes(conveyor.type || "normal")) return { applied: false, label: "", steps: [] };
+  const start = { x: robot.x, y: robot.y, direction: robot.direction };
+  const output = conveyorOutputDirection(conveyor);
+  const next = nextCell(robot.x, robot.y, output);
+  if (!isInsideMap(next.x, next.y)) return { applied: false, label: "bloque", steps: [] };
+  const arrivalEntrySide = oppositeDirection(output);
+  robot.x = next.x;
+  robot.y = next.y;
+  const afterTranslation = { x: robot.x, y: robot.y, direction: robot.direction };
+  const steps = [{ from: start, to: afterTranslation, turn: 0 }];
+  let detail = `vers ${output}`;
+
+  const sourceTurn = conveyorTurnForMovement(conveyor, source);
+  const arrivalConveyor = tileAt(robot.x, robot.y)?.conveyor;
+  const arrivalTurn = conveyorArrivalTurn(arrivalConveyor, arrivalEntrySide);
+  const totalTurn = sourceTurn + arrivalTurn;
+  if (totalTurn) {
+    robot.direction = rotateDirection(robot.direction, sourceTurn);
+    if (arrivalTurn) robot.direction = rotateDirection(robot.direction, arrivalTurn);
+    steps[0] = { from: start, to: { x: robot.x, y: robot.y, direction: robot.direction }, turn: totalTurn };
+    detail += sourceTurn ? " avec rotation source" : "";
+    detail += arrivalTurn ? ` puis rotation sur ${conveyorDebugLabel(arrivalConveyor)}` : "";
+  }
+
+  return { applied: true, label: `${label} ${detail}`, steps };
+}
+
+function robotAnimationStep(robotId, from, to, turn = 0) {
   if (!stateChanged(from, to)) return null;
-  return { robotId, from, to };
+  return { robotId, from, to, turn };
 }
 
 function queueRobotAnimations(animations) {
@@ -1147,8 +1191,8 @@ function rotateSelectedTestRobot() {
   const robot = selectedTestRobot();
   if (!robot) return false;
   const from = { x: robot.x, y: robot.y, direction: robot.direction };
-  robot.direction = nextDirection(robot.direction);
-  queueRobotAnimations([robotAnimationStep(robot.id, from, { x: robot.x, y: robot.y, direction: robot.direction })]);
+  robot.direction = rotateDirection(robot.direction, 1);
+  queueRobotAnimations([robotAnimationStep(robot.id, from, { x: robot.x, y: robot.y, direction: robot.direction }, 1)]);
   lastTestAction = `Rotation manuelle vers ${robot.direction}`;
   renderMap();
   return true;
@@ -1438,7 +1482,17 @@ function boardCellCenter(x, y) {
   };
 }
 
-function rotationForTween(from, to) {
+function rotationForTween(from, to, turn = 0) {
+  if (turn > 0) {
+    let target = to;
+    while (target <= from) target += Math.PI * 2;
+    return target;
+  }
+  if (turn < 0) {
+    let target = to;
+    while (target >= from) target -= Math.PI * 2;
+    return target;
+  }
   let target = to;
   while (target - from > Math.PI) target -= Math.PI * 2;
   while (target - from < -Math.PI) target += Math.PI * 2;
@@ -1485,12 +1539,72 @@ function stateChanged(from, to) {
 }
 
 function conveyorOutputDirection(conveyor) {
-  if (conveyor.shape === "turn") return rotateDirection(conveyor.from || "east", conveyorTurnDelta(conveyor));
+  if (conveyor.shape === "turn") return conveyorTurnEntry(conveyor)?.to || rotateDirection(conveyor.from || "east", conveyorTurnDelta(conveyor));
   return conveyor.direction || "east";
 }
 
+function conveyorTurnForMovement(conveyor, source) {
+  if (conveyor.shape !== "turn") return 0;
+  return source === "conveyor" ? conveyorTurnDelta(conveyor) : 0;
+}
+
+function conveyorArrivalTurn(conveyor, entrySide) {
+  if (!conveyor) return 0;
+  if (conveyor.shape === "turn") return conveyorTurnDelta(conveyor);
+  if (conveyor.shape !== "merge") return 0;
+  const turningEntry = conveyor.inputs?.[1];
+  if (entrySide !== turningEntry) return 0;
+  return directionTurnDelta(oppositeDirection(entrySide), conveyor.direction || "east");
+}
+
 function conveyorTurnDelta(conveyor) {
-  return conveyor.turn === "left" ? 1 : -1;
+  return conveyor.turn === "left" ? -1 : 1;
+}
+
+function directionTurnDelta(fromDirection, toDirection) {
+  const fromIndex = DIRECTIONS.indexOf(fromDirection);
+  const toIndex = DIRECTIONS.indexOf(toDirection);
+  if (fromIndex < 0 || toIndex < 0) return 0;
+  const delta = (toIndex - fromIndex + DIRECTIONS.length) % DIRECTIONS.length;
+  if (delta === 1) return 1;
+  if (delta === 3) return -1;
+  if (delta === 2) return 2;
+  return 0;
+}
+
+function conveyorTurnEntry(conveyor) {
+  return conveyorConfig.turns.find((entry) => entry.from === (conveyor.from || "east") && entry.turn === (conveyor.turn || "right")) || null;
+}
+
+function conveyorTurnSpriteRotation(conveyor) {
+  return Phaser.Math.DegToRad(conveyorTurnEntry(conveyor)?.spriteRotation ?? 0);
+}
+
+function conveyorTurnSpriteFlipX(conveyor) {
+  return Boolean(conveyorTurnEntry(conveyor)?.spriteFlipX);
+}
+
+function tileDebugLabel(tile) {
+  if (!tile?.conveyor) return "";
+  return conveyorDebugLabel(tile.conveyor);
+}
+
+function conveyorDebugLabel(conveyor) {
+  const fast = conveyor.type === "fast";
+  if (conveyor.shape === "turn") {
+    const label = conveyorTurnEntry(conveyor)?.label || `V${directionLetter(conveyor.from || "east")}${directionLetter(conveyorOutputDirection(conveyor))}`;
+    return fast ? label.replace(/^V/, "VR") : label;
+  }
+  if (conveyor.shape === "merge") {
+    const prefix = fast ? "2R" : "2";
+    const inputs = (conveyor.inputs || []).map(directionLetter).join("");
+    return `${prefix}${inputs}${directionLetter(conveyor.direction || "east")}`;
+  }
+  return `R${fast ? "R" : "S"}${directionLetter(conveyor.direction || "west")}`;
+}
+
+function directionLetter(direction) {
+  return { north: "N", east: "E", south: "S", west: "W" }[direction] || "?";
 }
 
 function rotateDirections(directions) {
@@ -1518,12 +1632,13 @@ function oppositeDirection(direction) {
   return { north: "south", east: "west", south: "north", west: "east" }[direction] || direction;
 }
 
-function turnRotation(from) {
-  return { east: Math.PI, north: Math.PI / 2, west: 0, south: Math.PI * 1.5 }[from] || 0;
-}
-
 function isTextInput(target) {
   return target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+}
+
+async function loadConveyorConfig() {
+  const response = await fetch(`${basePath}/shared/data/conveyors.json`);
+  conveyorConfig = await response.json();
 }
 
 async function loadSpriteInfo() {

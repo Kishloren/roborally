@@ -19,6 +19,7 @@ const testRobotList = document.querySelector("#test-robot-list");
 const testStatus = document.querySelector("#test-status");
 
 const TEST_MAP_ID = "test";
+const isTestMode = new URLSearchParams(window.location.search).has("test");
 const FLOOR_FRAMES = [0, 6, 13, 14, 15, 16];
 const PIT_FRAMES = { single: 11 };
 const ZONE_FRAMES = { repair1: 0, repair2: 1, spawn: 2, checkpoints: [6, 7, 8, 9, 12, 13, 14, 15] };
@@ -100,6 +101,7 @@ const imageInfo = new Map();
 await loadPhaser();
 await loadConveyorConfig();
 await loadSpriteInfo();
+configureMode();
 renderToolList();
 renderTestRobotOptions();
 renderOrderCards();
@@ -121,6 +123,12 @@ window.addEventListener("keydown", handleKeyDown);
 
 stage.addEventListener("dragover", handleStageDragOver);
 stage.addEventListener("drop", handleStageDrop);
+
+function configureMode() {
+  document.body.classList.toggle("test-mode", isTestMode);
+  document.body.classList.toggle("edit-mode", !isTestMode);
+  newMapButton.textContent = isTestMode ? "Reinitialiser test" : "Nouvelle carte";
+}
 
 function handleStageDragOver(event) {
   event.preventDefault();
@@ -196,10 +204,14 @@ async function loadMaps() {
   const response = await fetch(`${basePath}/api/maps`);
   const maps = await response.json();
   renderMapsList(maps);
-  if (maps.some((map) => map.id === TEST_MAP_ID)) {
+  if (isTestMode && maps.some((map) => map.id === TEST_MAP_ID)) {
     await loadMap(TEST_MAP_ID);
-  } else {
+  } else if (isTestMode) {
     await createTestMap();
+  } else if (maps.length) {
+    await loadMap(maps[0].id);
+  } else {
+    await createEditableMap();
   }
 }
 
@@ -236,6 +248,10 @@ async function createTestMap() {
 }
 
 async function createNewMap() {
+  if (!isTestMode) {
+    await createEditableMap();
+    return;
+  }
   const payload = { id: TEST_MAP_ID, name: "test", width: 12, height: 12, tileSize: 72, tiles: [] };
   const response = await fetch(`${basePath}/api/maps`, {
     method: "POST",
@@ -254,13 +270,46 @@ async function createNewMap() {
   setSaveState("Test reinitialise");
 }
 
+async function createEditableMap() {
+  const name = window.prompt("Nom de la nouvelle carte", "Nouveau plateau");
+  if (name === null) return;
+  const cleanName = name.trim() || "Nouveau plateau";
+  const payload = {
+    id: slugify(cleanName) || `map-${Date.now()}`,
+    name: cleanName,
+    width: 12,
+    height: 12,
+    tileSize: 72,
+    tiles: []
+  };
+  const response = await fetch(`${basePath}/api/maps`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const result = await response.json();
+  if (!result.ok) {
+    setSaveState(`Erreur: ${result.error || "creation impossible"}`);
+    return;
+  }
+  currentMap = result.map;
+  activeCell = null;
+  selectedLayerId = null;
+  mapNameInput.value = currentMap.name;
+  mapWidthInput.value = currentMap.width;
+  mapHeightInput.value = currentMap.height;
+  renderMapsList(await (await fetch(`${basePath}/api/maps`)).json());
+  renderMap();
+  setSaveState("Carte creee");
+}
+
 function renderMapsList(maps) {
-  const visibleMaps = maps.filter((map) => map.id === TEST_MAP_ID);
+  const visibleMaps = isTestMode ? maps.filter((map) => map.id === TEST_MAP_ID) : maps.filter((map) => map.id !== TEST_MAP_ID);
   mapsList.replaceChildren(...visibleMaps.map((map) => {
     const button = document.createElement("button");
     button.className = `map-button ${currentMap?.id === map.id ? "active" : ""}`;
     button.innerHTML = `<span class="tool-title">${escapeHtml(map.name)}</span><span class="tool-subtitle">${map.width}x${map.height} - ${escapeHtml(map.id)}</span>`;
-    button.addEventListener("click", () => loadMap(TEST_MAP_ID));
+    button.addEventListener("click", () => loadMap(map.id));
     return button;
   }));
 }
@@ -1382,6 +1431,7 @@ function scheduleSave() {
 async function saveCurrentMap() {
   if (!currentMap) return;
   try {
+    currentMap.thumbnail = generateMapThumbnail(currentMap);
     const response = await fetch(`${basePath}/api/maps/${encodeURIComponent(currentMap.id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1394,6 +1444,65 @@ async function saveCurrentMap() {
   } catch (error) {
     setSaveState(`Erreur: ${error.message}`);
   }
+}
+
+function generateMapThumbnail(map) {
+  const width = Math.max(1, map.width || 12);
+  const height = Math.max(1, map.height || 12);
+  const cell = 8;
+  const canvas = document.createElement("canvas");
+  canvas.width = width * cell;
+  canvas.height = height * cell;
+  const ctx = canvas.getContext("2d");
+  const tiles = new Map((map.tiles || []).map((tile) => [`${tile.x},${tile.y}`, tile]));
+
+  ctx.fillStyle = "#2f373d";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const tile = tiles.get(`${x},${y}`) || {};
+      drawThumbnailTile(ctx, tile, x * cell, y * cell, cell);
+    }
+  }
+  return canvas.toDataURL("image/png");
+}
+
+function drawThumbnailTile(ctx, tile, x, y, cell) {
+  if (tile.floor === "pit") ctx.fillStyle = "#050708";
+  else if (tile.conveyor) ctx.fillStyle = tile.conveyor.type === "fast" ? "#caa23d" : "#8f7432";
+  else if (tile.repair) ctx.fillStyle = "#55b894";
+  else if (tile.laser) ctx.fillStyle = "#db4f57";
+  else ctx.fillStyle = "#3c464d";
+  ctx.fillRect(x, y, cell, cell);
+
+  if (tile.spawn) {
+    ctx.fillStyle = "#6aa8ff";
+    ctx.fillRect(x + 2, y + 2, cell - 4, cell - 4);
+  }
+  if (tile.checkpoint) {
+    ctx.fillStyle = "#f2c14e";
+    ctx.beginPath();
+    ctx.arc(x + cell / 2, y + cell / 2, cell * 0.32, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  if (tile.walls?.length) {
+    ctx.strokeStyle = "#f5f7fa";
+    ctx.lineWidth = 1.5;
+    if (tile.walls.includes("north")) thumbnailLine(ctx, x, y, x + cell, y);
+    if (tile.walls.includes("east")) thumbnailLine(ctx, x + cell, y, x + cell, y + cell);
+    if (tile.walls.includes("south")) thumbnailLine(ctx, x, y + cell, x + cell, y + cell);
+    if (tile.walls.includes("west")) thumbnailLine(ctx, x, y, x, y + cell);
+  }
+  ctx.strokeStyle = "#46515a";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, cell, cell);
+}
+
+function thumbnailLine(ctx, x1, y1, x2, y2) {
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
 }
 
 function setSaveState(text) {
@@ -1685,6 +1794,16 @@ function clampNumber(value, min, max, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.max(min, Math.min(max, Math.round(number)));
+}
+
+function slugify(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 async function loadPhaser() {

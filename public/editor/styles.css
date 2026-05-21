@@ -342,6 +342,12 @@ label {
   border-top: 1px solid #303941;
 }
 
+body.edit-mode .segment-panel,
+body.edit-mode .order-panel,
+body.edit-mode .test-panel {
+  display: none;
+}
+
 .test-panel label {
   display: grid;
   grid-template-columns: 1fr;

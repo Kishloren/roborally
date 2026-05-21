@@ -15,7 +15,13 @@ export function createStorage(rootDir) {
           .filter((file) => file.endsWith(".json"))
           .map(async (file) => readJson(path.join(mapsDir, file)))
       );
-      return maps.map(({ id, name, width, height }) => ({ id, name, width, height }));
+      return maps.map(({ id, name, width, height, thumbnail }) => ({
+        id,
+        name,
+        width,
+        height,
+        thumbnail
+      }));
     },
 
     async readMap(mapId) {
@@ -77,8 +83,13 @@ function normalizeMap(map) {
     width,
     height,
     tileSize: clampInteger(map.tileSize, 24, 160, 72),
+    thumbnail: validThumbnail(map.thumbnail) ? map.thumbnail : "",
     tiles
   };
+}
+
+function validThumbnail(value) {
+  return typeof value === "string" && /^data:image\/(png|jpeg|webp);base64,/.test(value);
 }
 
 function clampInteger(value, min, max, fallback) {

@@ -8,6 +8,7 @@ import {
   createGame,
   getPublicState,
   joinGame,
+  resolveNextRegister,
   setPlayerReady,
   submitProgram
 } from "../src/game/game.js";
@@ -97,8 +98,22 @@ router.post("/api/game/save", async (_req, res) => {
   res.json({ ok: true, saveId: activeGame.id });
 });
 
+router.post("/api/game/resolve-next", async (_req, res) => {
+  try {
+    const events = resolveNextRegister(activeGame);
+    await storage.writeSave(activeGame);
+    broadcastState();
+    res.json({ ok: true, events, state: getPublicState(activeGame) });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
 router.get("/api/game/qr", async (req, res) => {
-  const target = getPlayerUrl(req);
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  const target = getPlayerUrl(req, req.query?.t);
   const dataUrl = await QRCode.toDataURL(target, { margin: 1, width: 320 });
   res.json({ url: target, qr: dataUrl });
 });
@@ -199,9 +214,11 @@ function broadcastState() {
   io.emit("game:state", getPublicState(activeGame));
 }
 
-function getPlayerUrl(req) {
+function getPlayerUrl(req, nonce) {
   const host = req.headers.host || `localhost:${port}`;
-  return `${req.protocol}://${host}${basePath}/player/?game=${activeGame.id}`;
+  const protocol = req.headers["x-forwarded-proto"] || req.protocol;
+  const cacheBust = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-${String(nonce || "").slice(-8)}`;
+  return `${protocol}://${host}${basePath}/player/?join=${cacheBust}&game=${activeGame.id}&v=${cacheBust}`;
 }
 
 function normalizeBasePath(value) {

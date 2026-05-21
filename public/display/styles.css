@@ -10,8 +10,32 @@
 }
 
 #game-canvas {
+  position: relative;
+  width: 100%;
+  height: 100%;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
+}
+
+#game-canvas canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
+#display-error {
+  position: absolute;
+  left: 24px;
+  top: 24px;
+  z-index: 2;
+  max-width: 640px;
+  padding: 12px 14px;
+  border: 1px solid #ff5c6c;
+  background: #2a1117;
+  color: #ffd7dc;
+  font-size: 16px;
+  line-height: 1.4;
 }
 
 #side-panel {
@@ -23,10 +47,23 @@
   gap: 18px;
 }
 
+#join-link {
+  width: 312px;
+  height: 312px;
+  display: block;
+  background: white;
+  cursor: pointer;
+}
+
+#join-link:focus-visible {
+  outline: 3px solid #f2c14e;
+  outline-offset: 4px;
+}
+
 #join-qr {
   width: 312px;
   height: 312px;
-  background: white;
+  display: block;
 }
 
 #join-url {
@@ -35,6 +72,93 @@
   font-size: 16px;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+#resolve-next {
+  min-height: 42px;
+  border: 1px solid #f2c14e;
+  background: #171c20;
+  color: #f2c14e;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#resolve-next:hover {
+  background: #2a2619;
+}
+
+#resolve-next:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.panel-title {
+  color: #8f9ba5;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+#map-picker {
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+}
+
+#map-list {
+  display: grid;
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.map-card {
+  width: 100%;
+  min-height: 74px;
+  padding: 8px;
+  border: 1px solid #39434c;
+  border-radius: 6px;
+  background: #171c20;
+  color: #dce5ec;
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.map-card:hover {
+  border-color: #f2c14e;
+}
+
+.map-card.active {
+  border-color: #f2c14e;
+  box-shadow: inset 0 0 0 1px #f2c14e;
+}
+
+.map-thumb {
+  width: 72px;
+  height: 54px;
+  display: block;
+  border: 1px solid #303941;
+  background: #101316;
+}
+
+.map-name {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-meta {
+  margin-top: 4px;
+  color: #8f9ba5;
+  font-size: 12px;
 }
 
 #players {

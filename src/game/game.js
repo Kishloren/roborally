@@ -1,4 +1,5 @@
-import { createProgramDeck } from "./cards.js";
+import { createProgramDeck, hydrateCard } from "./cards.js";
+import { blockedRegisterCount, isProgramComplete, resolveSegment } from "./rules.js";
 
 const MAX_PLAYERS = 8;
 const HAND_SIZE = 9;
@@ -41,7 +42,10 @@ export function getPublicState(game) {
       robotId: player.robotId,
       ready: player.ready,
       connected: player.connected,
-      programSubmitted: player.program.length === REGISTER_COUNT,
+      programSubmitted: isProgramComplete(game, player),
+      blockedRegisters: blockedRegisterCount(game.robots.find((robot) => robot.playerId === player.id)),
+      program: normalizeProgram(player.program).map((cardId) => cardId || null),
+      programCards: normalizeProgram(player.program).map((cardId) => cardId ? hydrateCard(cardId) : null),
       hand: player.hand
     })),
     robots: game.robots,
@@ -73,6 +77,9 @@ export function joinGame(game, { name, robotId, socketId }) {
     direction: spawn.direction || "north",
     damage: 0,
     lives: 3,
+    holographic: true,
+    eliminated: false,
+    destroyed: false,
     poweredDown: false,
     checkpoint: 0
   };
@@ -95,19 +102,45 @@ export function setPlayerReady(game, playerId, ready) {
 
 export function submitProgram(game, playerId, cardIds) {
   const player = findPlayer(game, playerId);
+  const robot = game.robots.find((item) => item.playerId === playerId);
+  if (!robot || robot.eliminated) throw new Error("Robot indisponible.");
   if (!Array.isArray(cardIds) || cardIds.length !== REGISTER_COUNT) {
     throw new Error(`Programme attendu: ${REGISTER_COUNT} cartes.`);
   }
+  const normalizedCards = normalizeProgram(cardIds);
+  const lockedIndexes = lockedRegisterIndexes(robot);
   const handIds = new Set(player.hand.map((card) => card.id));
-  for (const cardId of cardIds) {
+  const usedUnlockedCards = new Set();
+  for (let index = 0; index < REGISTER_COUNT; index += 1) {
+    const cardId = normalizedCards[index];
+    if (lockedIndexes.includes(index)) {
+      if (player.program[index] && cardId !== player.program[index]) {
+        throw new Error(`Registre ${index + 1} bloque.`);
+      }
+      if (!player.program[index] && !cardId) {
+        throw new Error(`Registre ${index + 1} bloque sans carte precedente.`);
+      }
+      normalizedCards[index] = player.program[index] || cardId;
+      continue;
+    }
+    if (!cardId) throw new Error(`Registre ${index + 1} incomplet.`);
     if (!handIds.has(cardId)) throw new Error(`Carte absente de la main: ${cardId}`);
+    if (usedUnlockedCards.has(cardId)) throw new Error(`Carte utilisee plusieurs fois: ${cardId}`);
+    usedUnlockedCards.add(cardId);
   }
-  player.program = cardIds;
+  player.program = normalizedCards;
   game.eventLog.push({ type: "program_submitted", playerId, at: new Date().toISOString() });
-  if (game.players.every((item) => item.program.length === REGISTER_COUNT)) {
+  if (game.players.every((item) => isProgramComplete(game, item))) {
     game.status = "ready_to_resolve";
     game.phase = "ready_to_resolve";
   }
+}
+
+export function resolveNextRegister(game) {
+  if (!["ready_to_resolve", "resolution"].includes(game.phase)) {
+    throw new Error("La partie n'est pas prete pour la resolution.");
+  }
+  return resolveSegment(game, game.register || 0);
 }
 
 function drawCards(game, count) {
@@ -122,6 +155,15 @@ function drawCards(game, count) {
     cards.push(card);
   }
   return cards;
+}
+
+function normalizeProgram(program = []) {
+  return Array.from({ length: REGISTER_COUNT }, (_, index) => program[index] || null);
+}
+
+function lockedRegisterIndexes(robot) {
+  const blocked = blockedRegisterCount(robot);
+  return Array.from({ length: blocked }, (_, index) => REGISTER_COUNT - blocked + index);
 }
 
 function findPlayer(game, playerId) {

@@ -1,9 +1,8 @@
-const joinPanel = document.querySelector("#join-panel");
-const programPanel = document.querySelector("#program-panel");
-const joinButton = document.querySelector("#join-button");
 const basePath = detectBasePath("player");
 const socket = window.io?.({ path: `${basePath}/socket.io` });
 
+const DESIGN_WIDTH = 1920;
+const DESIGN_HEIGHT = 1080;
 const CARD_SOURCE = { width: 310, height: 460 };
 const FLOOR_FRAMES = [0, 6, 13, 14, 15, 16];
 const PIT_FRAMES = { single: 11, vertical: [3, 10], horizontal: [17, 18] };
@@ -34,8 +33,10 @@ const FAST_TURN_TRANSFORMS = {
 
 let playerId = window.localStorage.getItem("roborally.playerId");
 let program = Array(5).fill(null);
+let programSyncKey = "";
 let handOrder = [];
 let latestState = null;
+let previousState = null;
 let playerScene = null;
 let dragState = null;
 let boardView = { x: 0, y: 0, scale: 1, baseScale: 1, isPanning: false, panX: 0, panY: 0, pointers: new Map(), pinchDistance: 0 };
@@ -44,66 +45,77 @@ let boardContainerRef = null;
 let layout = null;
 let playerGame = null;
 let resizeTimer = null;
+let pollingTimer = null;
 let debugViewport = { width: 0, height: 0, dpr: 1, renderResolution: 1, source: "init" };
+let titleSceneRef = null;
 
-joinButton.addEventListener("click", joinGame);
-window.addEventListener("resize", scheduleViewportResize);
-window.addEventListener("orientationchange", scheduleViewportResize);
-window.visualViewport?.addEventListener("resize", scheduleViewportResize);
-window.visualViewport?.addEventListener("scroll", scheduleViewportResize);
-window.addEventListener("pointerdown", requestPlayerFullscreen, { once: true });
-window.addEventListener("touchstart", requestPlayerFullscreen, { once: true, passive: true });
-
-document.addEventListener("click", () => {
-  requestPlayerFullscreen();
-}, { once: true });
+window.addEventListener("resize", enforceLandscapeLock);
+window.addEventListener("orientationchange", enforceLandscapeLock);
+window.addEventListener("fullscreenchange", enforceLandscapeLock);
+window.visualViewport?.addEventListener("resize", enforceLandscapeLock);
 
 if (socket) {
   socket.on("game:state", (state) => {
+    previousState = latestState;
     latestState = state;
-    render();
+    render(previousState);
   });
+  socket.on("connect", stopPolling);
+  socket.on("connect_error", startPolling);
+  socket.on("disconnect", startPolling);
 } else {
-  pollState();
-  window.setInterval(pollState, 1000);
+  startPolling();
 }
 
-initPlayerInterface();
+// Initialisation Phaser en bas de fichier, une fois les classes de scene declarees.
 
 async function joinGame() {
-  requestPlayerFullscreen();
-  if (socket) {
-    socket.emit("player:join", { name: "Player" }, handleJoinReply);
-    return;
+  if (socket?.connected) {
+    try {
+      handleJoinReply(await emitWithAck("player:join", { name: "Player" }));
+      return;
+    } catch {
+      startPolling();
+    }
   }
   handleJoinReply(await postJson(`${basePath}/api/player/join`, { name: "Player" }));
 }
 
 function handleJoinReply(reply) {
   if (!reply.ok) {
-    alert(reply.error);
+    titleSceneRef?.setStatus(reply.error || "Connexion refusee.");
     return;
   }
   playerId = reply.playerId;
   window.localStorage.setItem("roborally.playerId", playerId);
+  previousState = latestState;
   latestState = reply.state;
-  render();
+  render(previousState);
+  scheduleViewportResize();
+  titleSceneRef?.startGame();
 }
 
-function render() {
+function hasCurrentPlayer() {
+  return Boolean(playerId && latestState?.players.some((item) => item.id === playerId));
+}
+
+function render(previous = null) {
   const player = latestState?.players.find((item) => item.id === playerId);
-  joinPanel.classList.toggle("hidden", Boolean(player));
-  programPanel.classList.toggle("hidden", !latestState);
   if (!latestState || !playerScene) return;
 
-  if (player) syncHandOrder(player.hand);
-  drawInterface(playerScene, latestState, player);
+  if (player) {
+    syncHandOrder(player.hand);
+    syncProgramFromServer(latestState, player);
+  }
+  drawInterface(playerScene, latestState, player, previous);
 }
 
-function drawInterface(scene, state, player) {
+function drawInterface(scene, state, player, previous = null) {
+  scene.tweens.killAll();
+  scene.time.removeAllEvents();
   scene.children.removeAll();
   layout = getLayout(scene);
-  drawBoard(scene, state);
+  drawBoard(scene, state, previous);
   drawPanel(scene, state, player);
 }
 
@@ -119,11 +131,18 @@ function getLayout(scene) {
   };
 }
 
-function drawBoard(scene, state) {
+function drawBoard(scene, state, previous = null) {
   const boardRect = layout.board;
   const map = state.map;
+  if (boardView.mapId !== map.id) {
+    boardView.initialized = false;
+    boardView.mapId = map.id;
+  }
   const specialTiles = new Map(map.tiles.map((tile) => [`${tile.x},${tile.y}`, tile]));
   const robotsByCell = new Map(state.robots.map((robot) => [`${robot.x},${robot.y}`, robot]));
+  const previousRobots = new Map((previous?.robots || []).map((robot) => [robot.id, robot]));
+  const changedEvents = newEvents(previous, state);
+  const robotSprites = new Map();
   const tileSize = Math.floor(Math.min(boardRect.width, boardRect.height) / Math.max(map.width, map.height));
   const boardWidth = map.width * tileSize;
   const boardHeight = map.height * tileSize;
@@ -164,12 +183,52 @@ function drawBoard(scene, state) {
         if (tile.walls) boardContainer.add(addWallTiles(scene, tile.walls, px, py, tileSize));
       }
       boardContainer.add(scene.add.rectangle(px, py, tileSize, tileSize).setOrigin(0).setStrokeStyle(1, 0x3a424a));
-      if (robot) boardContainer.add(addRobot(scene, robot, px, py, tileSize));
+      if (robot) {
+        const sprite = addRobot(scene, previousRobots.get(robot.id) || robot, px, py, tileSize);
+        robotSprites.set(robot.id, sprite);
+        boardContainer.add(sprite);
+      }
     }
   }
+  playEventTimeline(scene, boardContainer, state, changedEvents, robotSprites, tileSize);
   clampBoardView();
   boardContainer.setPosition(boardView.x, boardView.y);
   boardContainer.setScale(boardView.scale);
+}
+
+function drawLaserEffect(scene, boardContainer, state, event, tileSize) {
+  const robots = new Map(state.robots.map((robot) => [robot.id, robot]));
+  const start = laserStartPoint(event, robots, tileSize);
+  const hitRobot = robots.get(event.hitRobotId);
+  if (!start || !hitRobot) return;
+  const end = cellCenter(hitRobot.x, hitRobot.y, tileSize);
+  const beam = scene.add.graphics();
+  beam.lineStyle(Math.max(4, (event.power || 1) * 3), 0xfff27a, 0.95);
+  beam.beginPath();
+  beam.moveTo(start.x, start.y);
+  beam.lineTo(end.x, end.y);
+  beam.strokePath();
+  boardContainer.add(beam);
+  scene.tweens.add({
+    targets: beam,
+    alpha: 0,
+    duration: 320,
+    ease: "Cubic.easeOut",
+    onComplete: () => beam.destroy()
+  });
+}
+
+function laserStartPoint(event, robots, tileSize) {
+  if (event.source === "board_laser") {
+    const [x, y] = String(event.sourceId || "").split(",").map(Number);
+    if (Number.isFinite(x) && Number.isFinite(y)) return cellCenter(x, y, tileSize);
+  }
+  const sourceRobot = robots.get(event.sourceId);
+  return sourceRobot ? cellCenter(sourceRobot.x, sourceRobot.y, tileSize) : null;
+}
+
+function cellCenter(x, y, tileSize) {
+  return { x: x * tileSize + tileSize / 2, y: y * tileSize + tileSize / 2 };
 }
 
 function drawPanel(scene, state, player) {
@@ -206,7 +265,7 @@ function drawPanel(scene, state, player) {
     const locked = isRegisterLocked(robot, index);
     scene.add.circle(x + cardWidth / 2, registerY - 14, 6, locked ? 0xd92534 : 0x29c46a)
       .setStrokeStyle(2, 0xffffff, 0.35);
-    const card = player.hand.find((item) => item.id === cardId);
+    const card = findPlayerCard(player, cardId);
     if (card) {
       addCard(scene, card, x, registerY, cardWidth, "register", index, locked);
     } else {
@@ -266,12 +325,113 @@ function addCard(scene, card, x, y, width, zone, index, locked = false) {
 }
 
 function addRobot(scene, robot, px, py, tileSize) {
-  const marker = scene.add.container(px + tileSize / 2, py + tileSize / 2);
-  const body = scene.add.rectangle(0, 0, tileSize * 0.52, tileSize * 0.44, 0xd93f5f).setStrokeStyle(2, 0xf7d154);
-  const nose = scene.add.triangle(tileSize * 0.25, 0, 0, -tileSize * 0.16, 0, tileSize * 0.16, tileSize * 0.24, 0, 0xf7d154);
-  marker.add([body, nose]);
-  marker.rotation = Phaser.Math.DegToRad(directionDegrees(robot.direction));
+  const marker = scene.add.container(robot.x * tileSize + tileSize / 2, robot.y * tileSize + tileSize / 2);
+  let body;
+  if (scene.textures.exists("robot_tiles")) {
+    const frame = robotFrameIndex(robot);
+    body = scene.add.image(0, 0, "robot_tiles", frame);
+    body.setDisplaySize(tileSize * 0.82, tileSize * 0.82);
+    marker.add(body);
+  } else {
+    body = scene.add.rectangle(0, 0, tileSize * 0.52, tileSize * 0.44, 0xd93f5f).setStrokeStyle(2, 0xf7d154);
+    const nose = scene.add.triangle(tileSize * 0.25, 0, 0, -tileSize * 0.16, 0, tileSize * 0.16, tileSize * 0.24, 0, 0xf7d154);
+    marker.add([body, nose]);
+  }
+  marker.alpha = robot.holographic ? 0.58 : 1;
+  marker.rotation = rotationFromEast(robot.direction);
+  marker.setData("body", body);
   return marker;
+}
+
+function robotFrameIndex(robot) {
+  const match = String(robot?.id || "").match(/(\d+)$/);
+  const index = match ? Number(match[1]) - 1 : 0;
+  return Phaser.Math.Clamp(index, 0, 7);
+}
+
+function playEventTimeline(scene, boardContainer, state, events, robotSprites, tileSize) {
+  if (!events.length) {
+    syncRobotSpritesToState(robotSprites, state, tileSize);
+    return;
+  }
+  let cursor = 0;
+  for (const event of events) {
+    const delay = cursor;
+    const duration = timelineEventDuration(event);
+    scene.time.delayedCall(delay, () => playTimelineEvent(scene, boardContainer, state, event, robotSprites, tileSize, duration));
+    cursor += duration;
+  }
+  scene.time.delayedCall(cursor + 20, () => syncRobotSpritesToState(robotSprites, state, tileSize));
+}
+
+function playTimelineEvent(scene, boardContainer, state, event, robotSprites, tileSize, duration) {
+  const sprite = robotSprites.get(event.robotId);
+  if (event.type === "robot_moved" && sprite) {
+    tweenRobot(scene, sprite, event.x, event.y, tileSize, duration);
+  } else if ((event.type === "robot_rotated" || event.type === "conveyor_rotated") && sprite) {
+    tweenRobotRotation(scene, sprite, event.direction, duration);
+  } else if (event.type === "robot_respawned" && sprite) {
+    sprite.setPosition(event.x * tileSize + tileSize / 2, event.y * tileSize + tileSize / 2);
+    flashRobot(scene, sprite);
+  } else if (event.type === "robot_damaged" && sprite) {
+    flashRobot(scene, sprite);
+  } else if (event.type === "robot_materialized" && sprite) {
+    scene.tweens.add({ targets: sprite, alpha: 1, duration: Math.max(250, duration), ease: "Cubic.easeOut" });
+  } else if (event.type === "laser_fired" && event.hitRobotId) {
+    drawLaserEffect(scene, boardContainer, state, event, tileSize);
+  }
+}
+
+function timelineEventDuration(event) {
+  if (event.type === "robot_moved" || event.type === "robot_rotated" || event.type === "conveyor_rotated") return 1000;
+  if (event.type === "laser_fired") return event.hitRobotId ? 360 : 80;
+  if (event.type === "robot_damaged" || event.type === "robot_respawned" || event.type === "robot_materialized") return 320;
+  return 80;
+}
+
+function tweenRobot(scene, sprite, x, y, tileSize, duration) {
+  scene.tweens.add({
+    targets: sprite,
+    x: x * tileSize + tileSize / 2,
+    y: y * tileSize + tileSize / 2,
+    duration,
+    ease: "Cubic.easeInOut"
+  });
+}
+
+function tweenRobotRotation(scene, sprite, direction, duration) {
+  const targetRotation = rotationFromEast(direction);
+  scene.tweens.add({
+    targets: sprite,
+    rotation: nearestAngle(sprite.rotation, targetRotation),
+    duration,
+    ease: "Cubic.easeInOut"
+  });
+}
+
+function flashRobot(scene, sprite) {
+  const body = sprite.getData("body") || sprite;
+  scene.tweens.add({ targets: body, alpha: 0.25, yoyo: true, repeat: 3, duration: 80 });
+}
+
+function syncRobotSpritesToState(robotSprites, state, tileSize) {
+  for (const robot of state.robots) {
+    const sprite = robotSprites.get(robot.id);
+    if (!sprite) continue;
+    sprite.setPosition(robot.x * tileSize + tileSize / 2, robot.y * tileSize + tileSize / 2);
+    sprite.rotation = rotationFromEast(robot.direction);
+    sprite.alpha = robot.holographic ? 0.58 : 1;
+  }
+}
+
+function newEvents(previous, state) {
+  if (!previous || previous.id !== state.id) return [];
+  const previousLength = previous.eventLog?.length || 0;
+  return (state.eventLog || []).slice(Math.min(previousLength, state.eventLog?.length || 0));
+}
+
+function nearestAngle(from, to) {
+  return from + Phaser.Math.Angle.Wrap(to - from);
 }
 
 function syncHandOrder(cards) {
@@ -285,6 +445,28 @@ function syncHandOrder(cards) {
 function getOrderedHand(player) {
   const byId = new Map(player.hand.map((card) => [card.id, card]));
   return handOrder.map((id) => byId.get(id)).filter(Boolean);
+}
+
+function findPlayerCard(player, cardId) {
+  if (!cardId) return null;
+  return player.hand.find((item) => item.id === cardId)
+    || player.programCards?.find((item) => item?.id === cardId)
+    || null;
+}
+
+function syncProgramFromServer(state, player) {
+  const syncKey = `${state.id}:${state.turn}:${state.phase}`;
+  if (syncKey !== programSyncKey) {
+    program = Array(5).fill(null);
+    programSyncKey = syncKey;
+  }
+  const robot = state.robots.find((item) => item.playerId === player.id);
+  const serverProgram = player.program || [];
+  for (let index = 0; index < 5; index += 1) {
+    if (isRegisterLocked(robot, index) || player.programSubmitted) {
+      program[index] = serverProgram[index] || null;
+    }
+  }
 }
 
 function cardFrameIndex(card) {
@@ -481,7 +663,6 @@ function turnDirectionForFrameOne(direction, turn) {
 
 function configureDrag(scene) {
   scene.input.addPointer(2);
-  scene.input.on("pointerdown", requestPlayerFullscreen);
   scene.input.on("pointerdown", (pointer) => {
     const corrected = calibratedPointer(pointer);
     const boardRect = layout?.board;
@@ -576,19 +757,36 @@ function getDraggedCardContainer(target) {
   return target?.getData?.("cardContainer") || target || null;
 }
 
-function requestPlayerFullscreen() {
-  const root = document.documentElement;
-  if (document.fullscreenElement || !root.requestFullscreen) return;
-  root.requestFullscreen({ navigationUI: "hide" })
-    .then(() => {
-      lockLandscape();
+async function requestPlayerFullscreen(scene) {
+  lockLandscape(scene);
+  if (scene?.scale?.startFullscreen && !scene.scale.isFullscreen) {
+    try {
+      scene.scale.startFullscreen();
       scheduleViewportResize();
-    })
-    .catch(() => {});
+      return;
+    } catch {}
+  }
+  const target = playerGame?.canvas || document.documentElement;
+  if (document.fullscreenElement || !target.requestFullscreen) return;
+  await target.requestFullscreen({ navigationUI: "hide" }).catch(() => {});
+  scheduleViewportResize();
 }
 
-function lockLandscape() {
-  screen.orientation?.lock?.("landscape").catch(() => {});
+function lockLandscape(scene) {
+  const landscape = window.Phaser?.Scale?.LANDSCAPE || "landscape-primary";
+  if (scene?.scale?.lockOrientation) {
+    try {
+      scene.scale.lockOrientation(landscape);
+      return;
+    } catch {}
+  }
+  screen.orientation?.lock?.(landscape).catch(() => {});
+}
+
+function enforceLandscapeLock() {
+  lockLandscape(playerScene || titleSceneRef);
+  applyLandscapeViewportTransform();
+  playerGame?.scale.refresh();
 }
 
 function findDropTarget(x, y) {
@@ -676,88 +874,56 @@ function scheduleViewportResize() {
 }
 
 function resizePlayerGame() {
-  const viewport = getStableViewport();
-  applyViewportSize(viewport);
-  console.info("[RoboRally player viewport]", viewport.width, viewport.height, "resolution", viewport.renderResolution, "dpr", window.devicePixelRatio);
-  if (playerGame) {
-    playerGame.scale.resize(viewport.logicalWidth, viewport.logicalHeight);
-    applyCanvasDisplaySize(viewport);
-  }
-  boardView.initialized = false;
-  render();
+  applyLandscapeViewportTransform();
+  console.info("[RoboRally player viewport]", debugViewport.width, debugViewport.height, "portrait ignored", debugViewport.portraitIgnored, "design", DESIGN_WIDTH, DESIGN_HEIGHT, "dpr", window.devicePixelRatio);
+  playerGame?.scale.refresh();
 }
 
 function getStableViewport() {
   const visual = window.visualViewport;
-  const candidates = [
-    viewportCandidate("screen", Math.max(screen.width, screen.height), Math.min(screen.width, screen.height)),
-    viewportCandidate("outer", window.outerWidth, window.outerHeight),
-    viewportCandidate("inner", window.innerWidth, window.innerHeight),
-    viewportCandidate("document", document.documentElement.clientWidth, document.documentElement.clientHeight),
-    viewportCandidate("visualViewport", visual?.width, visual?.height)
-  ].filter((candidate) => candidate.width > 0 && candidate.height > 0);
-  const best = candidates
-    .filter((candidate) => candidate.width >= 500 && candidate.height >= 250)
-    .sort((a, b) => b.width * b.height - a.width * a.height)[0]
-    || candidates.sort((a, b) => b.width * b.height - a.width * a.height)[0]
-    || viewportCandidate("fallback", 800, 360);
-  const width = Math.round(best.width);
-  const height = Math.round(best.height);
+  const rawWidth = Math.max(1, Math.round(visual?.width || window.innerWidth || document.documentElement.clientWidth || 800));
+  const rawHeight = Math.max(1, Math.round(visual?.height || window.innerHeight || document.documentElement.clientHeight || 360));
+  const width = Math.max(rawWidth, rawHeight);
+  const height = Math.min(rawWidth, rawHeight);
   debugViewport = {
-    width: Math.max(1, width),
-    height: Math.max(1, height),
+    rawWidth,
+    rawHeight,
+    width,
+    height,
+    portraitIgnored: rawHeight > rawWidth,
     dpr: window.devicePixelRatio || 1,
-    renderResolution: getRenderResolution({ width: Math.max(1, width), height: Math.max(1, height) }),
-    source: best.source,
-    candidates
+    renderResolution: getRenderResolution({ width, height }),
+    source: visual ? "visualViewport" : "window"
   };
   return {
-    width: Math.max(1, width),
-    height: Math.max(1, height),
-    renderResolution: debugViewport.renderResolution,
-    logicalWidth: Math.round(Math.max(1, width) * debugViewport.renderResolution),
-    logicalHeight: Math.round(Math.max(1, height) * debugViewport.renderResolution)
+    width: DESIGN_WIDTH,
+    height: DESIGN_HEIGHT,
+    renderResolution: 1
   };
 }
 
 function getRenderResolution({ width, height }) {
-  const dpr = window.devicePixelRatio || 1;
-  const fullHdScale = Math.max(1920 / width, 1080 / height, 1);
-  return Number(Math.min(Math.max(fullHdScale, 1), dpr, 4).toFixed(2));
+  return 1;
 }
 
-function viewportCandidate(source, rawWidth, rawHeight) {
-  const width = Math.round(Number(rawWidth) || 0);
-  const height = Math.round(Number(rawHeight) || 0);
-  return {
-    source,
-    width: Math.max(width, height),
-    height: Math.min(width, height)
-  };
-}
-
-function applyViewportSize({ width, height }) {
-  document.documentElement.style.width = `${width}px`;
-  document.documentElement.style.height = `${height}px`;
-  document.body.style.width = `${width}px`;
-  document.body.style.height = `${height}px`;
-  const app = document.querySelector("#player-app");
-  const stage = document.querySelector("#player-stage");
-  if (app) {
-    app.style.width = `${width}px`;
-    app.style.height = `${height}px`;
+function applyLandscapeViewportTransform() {
+  getStableViewport();
+  const stage = document.getElementById("player-stage");
+  if (!stage) return;
+  const { rawWidth, rawHeight, portraitIgnored } = debugViewport;
+  stage.style.position = "absolute";
+  stage.style.left = "0";
+  stage.style.top = "0";
+  stage.style.transformOrigin = "top left";
+  if (portraitIgnored) {
+    stage.style.width = `${rawHeight}px`;
+    stage.style.height = `${rawWidth}px`;
+    stage.style.transform = `translateX(${rawWidth}px) rotate(90deg)`;
+  } else {
+    stage.style.width = `${rawWidth}px`;
+    stage.style.height = `${rawHeight}px`;
+    stage.style.transform = "none";
   }
-  if (stage) {
-    stage.style.width = `${width}px`;
-    stage.style.height = `${height}px`;
-  }
-}
-
-function applyCanvasDisplaySize({ width, height }) {
-  const canvas = playerGame?.canvas;
-  if (!canvas) return;
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
 }
 
 function applyDrop(target) {
@@ -770,6 +936,7 @@ function applyDrop(target) {
 
   if (target.zone !== "register") return;
   if (dragState.fromZone === "register") {
+    if (isLocalRegisterLocked(dragState.fromIndex)) return;
     [program[dragState.fromIndex], program[target.index]] = [program[target.index], program[dragState.fromIndex]];
     return;
   }
@@ -780,46 +947,23 @@ function applyDrop(target) {
 }
 
 function calibratedPointer(pointer) {
-  const raw = rawLogicalPointer(pointer);
   return {
     phaserX: pointer.x,
     phaserY: pointer.y,
-    rawX: raw.x,
-    rawY: raw.y,
-    deltaX: raw.x - pointer.x,
-    deltaY: raw.y - pointer.y,
-    x: raw.x,
-    y: raw.y
+    x: pointer.x,
+    y: pointer.y
   };
-}
-
-function rawLogicalPointer(pointer) {
-  const event = pointer.event;
-  const canvas = playerGame?.canvas;
-  if (!event || !canvas) return { x: pointer.x, y: pointer.y };
-  const rect = canvas.getBoundingClientRect();
-  const eventPoint = eventClientPoint(event);
-  if (!eventPoint) return { x: pointer.x, y: pointer.y };
-  return {
-    x: (eventPoint.clientX - rect.left) * (playerGame.scale.width / rect.width),
-    y: (eventPoint.clientY - rect.top) * (playerGame.scale.height / rect.height)
-  };
-}
-
-function eventClientPoint(event) {
-  if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
-    return { clientX: event.clientX, clientY: event.clientY };
-  }
-  const touch = event.changedTouches?.[0] || event.touches?.[0];
-  if (touch && Number.isFinite(touch.clientX) && Number.isFinite(touch.clientY)) {
-    return { clientX: touch.clientX, clientY: touch.clientY };
-  }
-  return null;
 }
 
 function isRegisterLocked(robot, index) {
-  const damage = robot?.damage ?? 0;
-  return damage >= 9 - index;
+  const blocked = Math.max(0, Math.min(5, (robot?.damage ?? 0) - 4));
+  return index >= 5 - blocked;
+}
+
+function isLocalRegisterLocked(index) {
+  const player = latestState?.players.find((item) => item.id === playerId);
+  const robot = latestState?.robots.find((item) => item.playerId === player?.id);
+  return isRegisterLocked(robot, index);
 }
 
 function swapHandCards(firstId, secondId) {
@@ -846,9 +990,33 @@ async function submitProgram() {
 }
 
 async function pollState() {
-  const response = await fetch(`${basePath}/api/game/state`);
+  const response = await fetch(`${basePath}/api/game/state`, { cache: "no-store" });
+  previousState = latestState;
   latestState = await response.json();
-  render();
+  render(previousState);
+}
+
+function startPolling() {
+  if (pollingTimer) return;
+  pollState().catch(() => {});
+  pollingTimer = window.setInterval(() => {
+    pollState().catch(() => {});
+  }, 1000);
+}
+
+function stopPolling() {
+  if (!pollingTimer) return;
+  window.clearInterval(pollingTimer);
+  pollingTimer = null;
+}
+
+function emitWithAck(eventName, payload) {
+  return new Promise((resolve, reject) => {
+    socket.timeout(1500).emit(eventName, payload, (error, reply) => {
+      if (error) reject(error);
+      else resolve(reply);
+    });
+  });
 }
 
 async function postJson(url, payload) {
@@ -860,44 +1028,169 @@ async function postJson(url, payload) {
   return response.json();
 }
 
+let BootScene;
+let TitleScene;
+let PlayerScene;
+
+function definePlayerScenes() {
+BootScene = class BootScene extends Phaser.Scene {
+  constructor() {
+    super("BootScene");
+  }
+
+  preload() {
+    this.load.spritesheet("boot_robots", `${basePath}/shared/assets/images/robots.png`, { frameWidth: 256, frameHeight: 256 });
+  }
+
+  create() {
+    const { width, height } = this.scale;
+    this.cameras.main.setBackgroundColor("#050607");
+    const robot = this.add.image(width / 2, height / 2, "boot_robots", 0);
+    robot.setDisplaySize(Math.min(width, height) * 0.28, Math.min(width, height) * 0.28);
+    this.tweens.add({ targets: robot, alpha: 0.45, yoyo: true, repeat: -1, duration: 720, ease: "Sine.easeInOut" });
+    const enterTitle = async () => {
+      await requestPlayerFullscreen(this);
+      lockLandscape(this);
+      scheduleViewportResize();
+      this.scene.start("TitleScene");
+    };
+    this.input.once("pointerdown", enterTitle);
+    this.time.delayedCall(1000, () => {
+      if (document.fullscreenElement) this.scene.start("TitleScene");
+    });
+  }
+};
+
+TitleScene = class TitleScene extends Phaser.Scene {
+  constructor() {
+    super("TitleScene");
+    this.statusText = null;
+    this.startButton = null;
+  }
+
+  preload() {
+    const { width, height } = this.scale;
+    this.cameras.main.setBackgroundColor("#050607");
+    this.add.image(width / 2, height * 0.32, "boot_robots", 0)
+      .setDisplaySize(Math.min(width, height) * 0.22, Math.min(width, height) * 0.22);
+    this.add.text(width / 2, height * 0.52, "ROBORALLY", {
+      fontFamily: "Arial",
+      fontSize: `${Math.max(32, Math.floor(height * 0.11))}px`,
+      fontStyle: "bold",
+      color: "#f2c14e"
+    }).setOrigin(0.5);
+    this.statusText = this.add.text(width / 2, height * 0.77, "Chargement...", {
+      fontFamily: "Arial",
+      fontSize: `${Math.max(14, Math.floor(height * 0.035))}px`,
+      color: "#dce5ec"
+    }).setOrigin(0.5);
+    const barWidth = Math.min(width * 0.46, 460);
+    const barHeight = Math.max(8, height * 0.018);
+    const barX = (width - barWidth) / 2;
+    const barY = height * 0.66;
+    this.add.rectangle(barX, barY, barWidth, barHeight, 0x20272d).setOrigin(0);
+    const fill = this.add.rectangle(barX, barY, 0, barHeight, 0xf2c14e).setOrigin(0);
+    this.load.on("progress", (value) => {
+      fill.width = barWidth * value;
+    });
+    this.load.on("loaderror", (file) => {
+      this.setStatus(`Asset introuvable: ${file?.src || file?.key || "inconnu"}`);
+    });
+    loadPlayerAssets(this);
+  }
+
+  create() {
+    titleSceneRef = this;
+    requestPlayerFullscreen(this);
+    lockLandscape(this);
+    this.setStatus("Pret");
+    this.createStartButton();
+  }
+
+  createStartButton() {
+    const { width, height } = this.scale;
+    const buttonWidth = Math.min(width * 0.24, 240);
+    const buttonHeight = Math.max(42, height * 0.09);
+    const button = this.add.rectangle(width / 2, height * 0.78, buttonWidth, buttonHeight, 0xf2c14e)
+      .setInteractive({ useHandCursor: true });
+    button.setStrokeStyle(2, 0xffffff, 0.25);
+    const label = this.add.text(button.x, button.y, "DEMARRER", {
+      fontFamily: "Arial",
+      fontSize: `${Math.max(15, Math.floor(buttonHeight * 0.34))}px`,
+      fontStyle: "bold",
+      color: "#101316"
+    }).setOrigin(0.5);
+    this.startButton = button;
+    button.on("pointerdown", async () => {
+      button.disableInteractive();
+      label.setText("CONNEXION...");
+      this.setStatus("Connexion a la partie");
+      await joinGame();
+      if (!hasCurrentPlayer()) {
+        button.setInteractive({ useHandCursor: true });
+      }
+    });
+  }
+
+  setStatus(message) {
+    this.statusText?.setText(message);
+  }
+
+  startGame() {
+    if (!hasCurrentPlayer()) return;
+    titleSceneRef = null;
+    this.scene.start("PlayerScene");
+  }
+};
+
+PlayerScene = class PlayerScene extends Phaser.Scene {
+  constructor() {
+    super("PlayerScene");
+  }
+
+  create() {
+    playerScene = this;
+    configureDrag(this);
+    this.scale.on("resize", () => {
+      lockLandscape(this);
+    });
+    lockLandscape(this);
+    render(previousState);
+  }
+};
+
+function loadPlayerAssets(scene) {
+  scene.load.spritesheet("program_cards", `${basePath}/shared/assets/images/cartes.png`, { frameWidth: 310, frameHeight: 460 });
+  scene.load.spritesheet("floor_tiles", `${basePath}/shared/assets/images/sols.png`, { frameWidth: 66, frameHeight: 66 });
+  scene.load.spritesheet("pit_tiles", `${basePath}/shared/assets/images/pits.png`, { frameWidth: 66, frameHeight: 66 });
+  scene.load.spritesheet("conveyor_tiles", `${basePath}/shared/assets/images/conv.png`, { frameWidth: 66, frameHeight: 66 });
+  scene.load.spritesheet("gear_tiles", `${basePath}/shared/assets/images/gears.png`, { frameWidth: 66, frameHeight: 66 });
+  scene.load.spritesheet("wall_tiles", `${basePath}/shared/assets/images/walls.png`, { frameWidth: 66, frameHeight: 66 });
+  scene.load.spritesheet("zone_tiles", `${basePath}/shared/assets/images/zones.png`, { frameWidth: 66, frameHeight: 66 });
+  scene.load.spritesheet("laser_tiles", `${basePath}/shared/assets/images/lasers.png`, { frameWidth: 66, frameHeight: 66 });
+  scene.load.spritesheet("crusher_tiles", `${basePath}/shared/assets/images/crush.png`, { frameWidth: 66, frameHeight: 66 });
+  scene.load.spritesheet("robot_tiles", `${basePath}/shared/assets/images/robots.png`, { frameWidth: 256, frameHeight: 256 });
+}
+}
+
 async function initPlayerInterface() {
   await loadPhaser();
-  const viewport = getStableViewport();
-  applyViewportSize(viewport);
+  definePlayerScenes();
+  applyLandscapeViewportTransform();
   playerGame = new Phaser.Game({
-    type: Phaser.AUTO,
+    type: Phaser.CANVAS,
     parent: "player-stage",
-    width: viewport.logicalWidth,
-    height: viewport.logicalHeight,
+    width: DESIGN_WIDTH,
+    height: DESIGN_HEIGHT,
     resolution: 1,
-    backgroundColor: "#101316",
+    backgroundColor: "#050607",
     scale: {
-      mode: Phaser.Scale.NONE
+      mode: Phaser.Scale.FIT,
+      autoCenter: Phaser.Scale.CENTER_BOTH,
+      fullscreenTarget: "player-stage",
+      expandParent: true
     },
-    scene: {
-      preload() {
-        this.load.spritesheet("program_cards", `${basePath}/shared/assets/images/cartes.png`, { frameWidth: 310, frameHeight: 460 });
-        this.load.spritesheet("floor_tiles", `${basePath}/shared/assets/images/sols.png`, { frameWidth: 66, frameHeight: 66 });
-        this.load.spritesheet("pit_tiles", `${basePath}/shared/assets/images/pits.png`, { frameWidth: 66, frameHeight: 66 });
-        this.load.spritesheet("conveyor_tiles", `${basePath}/shared/assets/images/conv.png`, { frameWidth: 66, frameHeight: 66 });
-        this.load.spritesheet("gear_tiles", `${basePath}/shared/assets/images/gears.png`, { frameWidth: 66, frameHeight: 66 });
-        this.load.spritesheet("wall_tiles", `${basePath}/shared/assets/images/walls.png`, { frameWidth: 66, frameHeight: 66 });
-        this.load.spritesheet("zone_tiles", `${basePath}/shared/assets/images/zones.png`, { frameWidth: 66, frameHeight: 66 });
-        this.load.spritesheet("laser_tiles", `${basePath}/shared/assets/images/lasers.png`, { frameWidth: 66, frameHeight: 66 });
-        this.load.spritesheet("crusher_tiles", `${basePath}/shared/assets/images/crush.png`, { frameWidth: 66, frameHeight: 66 });
-      },
-      create() {
-        playerScene = this;
-        configureDrag(this);
-        this.scale.on("resize", () => {
-          boardView.initialized = false;
-          render();
-        });
-        applyCanvasDisplaySize(viewport);
-        resizePlayerGame();
-        render();
-      }
-    }
+    scene: [BootScene, TitleScene, PlayerScene]
   });
 }
 
@@ -925,3 +1218,7 @@ function loadScript(src) {
     document.head.append(script);
   });
 }
+
+initPlayerInterface().catch((error) => {
+  console.error("RoboRally player init failed", error);
+});

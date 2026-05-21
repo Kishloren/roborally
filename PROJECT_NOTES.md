@@ -8,6 +8,21 @@ Adaptation numerique de RoboRally avec :
 
 - un ecran commun pour tous les joueurs ;
 - une interface smartphone par joueur, forcee en paysage autant que possible ;
+- directive prioritaire : l'interface joueur doit etre rendue et pilotee uniquement par Phaser ; le DOM ne sert qu'a monter le canvas et charger les scripts ;
+- cote player, le viewport, le canvas, les coordonnees d'interaction, le boot, le titre et l'interface de jeu sont geres par Phaser ;
+- le player utilise une scene logique fixe Full HD `1920x1080`, adaptee a l'ecran par Phaser avec `Scale.FIT` ;
+- le player ne redimensionne plus le DOM ni le canvas manuellement depuis JavaScript ;
+- le plein ecran et le verrouillage paysage sont demandes via le Scale Manager Phaser quand disponible ;
+- les evenements `resize`, `orientationchange`, `fullscreenchange` et `visualViewport.resize` ne recalculent plus l'interface joueur ; ils redemandent seulement le verrouillage paysage ;
+- si le viewport remonte une hauteur superieure a la largeur, le player ignore ce portrait : il utilise `max(width,height) x min(width,height)` comme viewport paysage et tourne le conteneur Phaser de 90 degres ;
+- le player suit le flux Phaser `BootScene -> TitleScene -> PlayerScene` ;
+- `BootScene` affiche un robot centre sur fond noir et demande le plein ecran au clic ;
+- `TitleScene` force a nouveau le plein ecran et le paysage a son ouverture, charge tous les assets joueur, affiche une barre de progression puis le bouton Phaser `DEMARRER` ;
+- `PlayerScene` affiche le plateau, la main, les registres et gere les interactions ;
+- le plateau reel est affiche dans les deux tiers gauche de l'interface joueur, avec la neutralisation portrait conservee ;
+- si Socket.IO ne repond pas au join, le player bascule automatiquement sur les routes REST et poll `/api/game/state`, afin d'eviter un ecran vide ;
+- `/player/` importe `main.js` avec le parametre `v` de l'URL du QR code pour eviter que le smartphone reutilise un ancien script ;
+- le player utilise explicitement le renderer Phaser Canvas, pour eviter les canvases noirs WebGL observes sur certains Chrome mobiles ;
 - serveur Node.js local pour commencer, port `6282` ;
 - stockage des donnees en fichiers JSON ;
 - rendu principal avec Phaser ;
@@ -20,11 +35,28 @@ Routes principales :
 - `/display/` : ecran commun Phaser ;
 - `/player/` : interface joueur smartphone ;
 - `/backoffice/` : editeur de maps PC sans authentification ;
+- `/backoffice?test` : environnement de test plateau/robots/cartes ;
 - `/api/game/state` : etat public de la partie ;
 - `/api/game/new` : recharge une nouvelle partie depuis une map ;
 - `/api/game/qr` : QR code vers l'interface joueur.
 - `/api/maps` : liste et creation des maps ;
 - `/api/maps/:mapId` : lecture et sauvegarde d'une map JSON.
+
+Display :
+
+- le QR code joueur est cliquable et ouvre `/player/` dans un nouvel onglet ;
+- l'URL du QR code contient des parametres `join` et `v` regeneres a chaque appel de `/api/game/qr`, afin d'eviter les problemes de cache cote player ;
+- le bouton `Resoudre registre` appelle `POST /api/game/resolve-next` pour faciliter les tests de resolution.
+- le panneau droit affiche la liste des plateaux disponibles via `/api/maps` ;
+- chaque plateau est presente avec son nom, ses dimensions et la miniature stockee dans son JSON ;
+- cliquer sur un plateau appelle `POST /api/game/new` avec son `mapId` et demarre une nouvelle partie sur ce plateau.
+
+Backoffice :
+
+- `/backoffice/` liste toutes les cartes sauf `test`, permet de les editer, et le bouton `Nouvelle carte` cree une carte 12x12 ;
+- `/backoffice?test` charge uniquement la carte `test` et affiche l'environnement de test avec robots, segments et cartes d'ordre ;
+- a chaque sauvegarde d'une carte, une miniature PNG data URL est generee et stockee dans le champ `thumbnail` du JSON ;
+- `/api/maps` renvoie une liste legere `{ id, name, width, height, thumbnail }`, sans les tuiles completes.
 
 Serveur :
 
@@ -131,6 +163,28 @@ Elements de plateau pris en compte dans le premier moteur :
 - murs ;
 - trous.
 
+Implementation initiale :
+
+- `src/game/rules.js` contient le premier moteur de resolution serveur ;
+- `resolveSegment(game, registerIndex)` execute un registre : cartes par priorite decroissante, puis deux vagues de convoyeurs ;
+- les deplacements serveur prennent en compte murs, trous, poussee de robots physiques, robots holographiques ignores par les interactions physiques, destruction et respawn ;
+- les convoyeurs sont resolus en deux vagues : rapides seuls, puis rapides + normaux ;
+- les conflits de destination entre robots deplaces par une meme vague de convoyeurs annulent les deplacements concernes ;
+- les lasers fixes et les lasers frontaux des robots sont resolus apres les convoyeurs ;
+- les lasers s'arretent aux murs et au premier robot physique touche ;
+- les robots holographiques ne sont pas touches par les lasers et ne tirent pas ;
+- les lasers fixes infligent `power` degats, de `1` a `3`, et les lasers de robots infligent `1` degat ;
+- un robot detruit par degats a `10` ou plus respawn immediatement selon les regles, puis reste inactif jusqu'au segment suivant ;
+- le serveur calcule les registres bloques avec `max(0, degats - 4)` et conserve leurs cartes au tour suivant ;
+- en fin de tour, les cartes non bloquees de la main sont defaussees, puis une nouvelle main de `9 - degats` cartes est distribuee ;
+- l'etat public expose `blockedRegisters`, `program` et `programCards` pour que l'interface joueur affiche les registres verrouilles meme si la carte n'est plus dans la main ;
+- les interfaces `/display/` et `/player/` exploitent les nouveaux evenements serveur sous forme de timeline ;
+- les evenements `robot_moved`, `robot_rotated` et `conveyor_rotated` sont rejoues dans l'ordre, avec tween d'environ `1` seconde par effet ;
+- les evenements `robot_damaged` provoquent un flash court du robot touche ;
+- les evenements `laser_fired` avec cible affichent un rayon bref entre la source et le robot touche ;
+- `POST /api/game/resolve-next` resout le prochain registre pour le debug serveur ;
+- la timeline UI reste basee sur les evenements produits par le moteur ; une separation plus fine par sous-phase explicite pourra etre ajoutee si necessaire.
+
 Les autres elements du plateau seront integres plus tard.
 
 Convoyeurs :
@@ -184,13 +238,13 @@ Etat actuel :
 - les registres bloques refusent le drop.
 - le bouton de calibration et l'overlay de debug rouge ont ete retires de l'interface normale.
 
-Layout Phaser :
+Layout Phaser player :
 
-- largeur et hauteur CSS : viewport stable detecte (`screen`, `outer`, `inner`, document ou `visualViewport`) ;
-- largeur et hauteur Phaser : viewport CSS multiplie par le facteur de resolution logique ;
-- plateau : `2/3` de la largeur ;
-- volet joueur : `1/3` de la largeur ;
-- le layout est recalcule a chaque resize.
+- scene logique fixe : `1920x1080` ;
+- adaptation ecran : `Phaser.Scale.FIT` ;
+- plateau : `2/3` de la largeur logique ;
+- volet joueur : `1/3` de la largeur logique ;
+- le layout n'est plus recalcule a chaque rotation ecran ; la rotation redemande seulement le verrouillage paysage.
 
 Drag/drop des cartes :
 

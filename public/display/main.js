@@ -1,64 +1,236 @@
 const qrImage = document.querySelector("#join-qr");
+const joinLink = document.querySelector("#join-link");
 const joinUrl = document.querySelector("#join-url");
+const resolveNextButton = document.querySelector("#resolve-next");
+const mapList = document.querySelector("#map-list");
 const players = document.querySelector("#players");
+const displayError = document.querySelector("#display-error");
 const basePath = detectBasePath("display");
 const socket = window.io?.({ path: `${basePath}/socket.io` });
 
-let latestState = null;
-let sceneRef = null;
+const FLOOR_FRAMES = [0, 6, 13, 14, 15, 16];
+const PIT_FRAMES = { single: 11 };
+const ZONE_FRAMES = { repair1: 0, repair2: 1, spawn: 2, checkpoints: [6, 7, 8, 9, 12, 13, 14, 15] };
+const LASER_FRAMES = { beamsNorthSouth: [0, 1, 2], emittersNorth: [8, 9, 10] };
+const CONVEYOR_FRAMES = { straight: 0, turnRight: 1, merge: 2, fastStraight: 8, fastTurnRight: 9, fastMerge: 10 };
+const CRUSHER_FRAMES = { plain: 21, topSegmentStart: 23, conveyor: 28, bottomSegmentStart: 30 };
+const TURN_TRANSFORMS = {
+  "east:north": { frame: CONVEYOR_FRAMES.turnRight, rotation: Math.PI, flipX: false },
+  "north:west": { frame: CONVEYOR_FRAMES.turnRight, rotation: Math.PI / 2, flipX: false },
+  "west:south": { frame: CONVEYOR_FRAMES.turnRight, rotation: 0, flipX: false },
+  "south:east": { frame: CONVEYOR_FRAMES.turnRight, rotation: Math.PI * 1.5, flipX: false },
+  "east:south": { frame: CONVEYOR_FRAMES.turnRight, rotation: Math.PI, flipX: true },
+  "south:west": { frame: CONVEYOR_FRAMES.turnRight, rotation: Math.PI * 1.5, flipX: true },
+  "west:north": { frame: CONVEYOR_FRAMES.turnRight, rotation: 0, flipX: true },
+  "north:east": { frame: CONVEYOR_FRAMES.turnRight, rotation: Math.PI / 2, flipX: true }
+};
+const FAST_TURN_TRANSFORMS = {
+  "east:north": { frame: CONVEYOR_FRAMES.fastTurnRight, rotation: Math.PI, flipX: false, flipY: true },
+  "north:west": { frame: CONVEYOR_FRAMES.fastTurnRight, rotation: Math.PI / 2, flipX: false, flipY: true },
+  "west:south": { frame: CONVEYOR_FRAMES.fastTurnRight, rotation: 0, flipX: false, flipY: true },
+  "south:east": { frame: CONVEYOR_FRAMES.fastTurnRight, rotation: Math.PI * 1.5, flipX: false, flipY: true },
+  "east:south": { frame: CONVEYOR_FRAMES.fastTurnRight, rotation: Math.PI, flipX: true, flipY: true },
+  "south:west": { frame: CONVEYOR_FRAMES.fastTurnRight, rotation: Math.PI * 1.5, flipX: true, flipY: true },
+  "west:north": { frame: CONVEYOR_FRAMES.fastTurnRight, rotation: 0, flipX: true, flipY: true },
+  "north:east": { frame: CONVEYOR_FRAMES.fastTurnRight, rotation: Math.PI / 2, flipX: true, flipY: true }
+};
 
-await loadPhaser();
-new Phaser.Game({
-  type: Phaser.AUTO,
-  parent: "game-canvas",
-  width: 1560,
-  height: 1080,
-  backgroundColor: "#101316",
-  scale: {
-    mode: Phaser.Scale.FIT,
-    autoCenter: Phaser.Scale.CENTER_BOTH
-  },
-  scene: {
-    preload,
-    create,
-    update
-  }
-});
+let latestState = null;
+let previousState = null;
+let sceneRef = null;
+let pollingTimer = null;
+let availableMaps = [];
+
+resolveNextButton.addEventListener("click", resolveNextRegister);
+
+try {
+  await loadPhaser();
+  new Phaser.Game({
+    type: Phaser.AUTO,
+    parent: "game-canvas",
+    width: 1560,
+    height: 1080,
+    backgroundColor: "#101316",
+    scale: {
+      mode: Phaser.Scale.RESIZE,
+      autoCenter: Phaser.Scale.NO_CENTER
+    },
+    scene: {
+      preload,
+      create,
+      update
+    }
+  });
+} catch (error) {
+  showDisplayError(`Phaser indisponible: ${error.message || error}`);
+}
 loadQr();
+loadMaps();
+pollState();
 
 if (socket) {
   socket.on("game:state", applyState);
+  socket.on("connect", stopPolling);
+  socket.on("connect_error", () => {
+    showDisplayError("Socket.IO indisponible, bascule en polling HTTP.");
+    startPolling();
+  });
 } else {
-  pollState();
-  window.setInterval(pollState, 1000);
+  startPolling();
 }
 
-function preload() {}
+function preload() {
+  this.load.spritesheet("floor_tiles", `${basePath}/shared/assets/images/sols.png`, { frameWidth: 66, frameHeight: 66 });
+  this.load.spritesheet("pit_tiles", `${basePath}/shared/assets/images/pits.png`, { frameWidth: 66, frameHeight: 66 });
+  this.load.spritesheet("conveyor_tiles", `${basePath}/shared/assets/images/conv.png`, { frameWidth: 66, frameHeight: 66 });
+  this.load.spritesheet("gear_tiles", `${basePath}/shared/assets/images/gears.png`, { frameWidth: 66, frameHeight: 66 });
+  this.load.spritesheet("wall_tiles", `${basePath}/shared/assets/images/walls.png`, { frameWidth: 66, frameHeight: 66 });
+  this.load.spritesheet("zone_tiles", `${basePath}/shared/assets/images/zones.png`, { frameWidth: 66, frameHeight: 66 });
+  this.load.spritesheet("laser_tiles", `${basePath}/shared/assets/images/lasers.png`, { frameWidth: 66, frameHeight: 66 });
+  this.load.spritesheet("crusher_tiles", `${basePath}/shared/assets/images/crush.png`, { frameWidth: 66, frameHeight: 66 });
+}
 
 function create() {
   sceneRef = this;
   createGeneratedSprites(this);
+  this.scale.on("resize", () => {
+    if (latestState) renderBoard(this, latestState);
+  });
   if (latestState) renderBoard(this, latestState);
 }
 
 function update() {}
 
 async function loadQr() {
-  const response = await fetch(`${basePath}/api/game/qr`);
+  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const response = await fetch(`${basePath}/api/game/qr?t=${encodeURIComponent(nonce)}`, { cache: "no-store" });
   const payload = await response.json();
+  qrImage.removeAttribute("src");
   qrImage.src = payload.qr;
+  joinLink.href = payload.url;
   joinUrl.textContent = payload.url;
 }
 
 async function pollState() {
-  const response = await fetch(`${basePath}/api/game/state`);
-  applyState(await response.json());
+  try {
+    const response = await fetch(`${basePath}/api/game/state`);
+    applyState(await response.json());
+  } catch (error) {
+    showDisplayError(`Etat indisponible: ${error.message || error}`);
+  }
+}
+
+async function loadMaps() {
+  try {
+    const response = await fetch(`${basePath}/api/maps`);
+    availableMaps = await response.json();
+    renderMapList();
+  } catch (error) {
+    showDisplayError(`Liste des plateaux indisponible: ${error.message || error}`);
+  }
+}
+
+function startPolling() {
+  if (pollingTimer) return;
+  pollingTimer = window.setInterval(pollState, 1000);
+}
+
+function stopPolling() {
+  if (!pollingTimer) return;
+  window.clearInterval(pollingTimer);
+  pollingTimer = null;
+}
+
+async function resolveNextRegister() {
+  resolveNextButton.disabled = true;
+  try {
+    const response = await fetch(`${basePath}/api/game/resolve-next`, { method: "POST" });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || "Resolution impossible");
+    applyState(payload.state);
+  } catch (error) {
+    console.warn(error);
+  } finally {
+    resolveNextButton.disabled = false;
+  }
 }
 
 function applyState(state) {
+  hideDisplayError();
+  previousState = latestState;
   latestState = state;
   renderPlayers(state);
-  if (sceneRef) renderBoard(sceneRef, state);
+  renderMapList();
+  if (sceneRef) renderBoard(sceneRef, state, previousState);
+}
+
+function renderMapList() {
+  if (!mapList || !availableMaps.length) return;
+  const currentId = latestState?.map?.id;
+  mapList.replaceChildren(
+    ...availableMaps.map((mapInfo) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `map-card${mapInfo.id === currentId ? " active" : ""}`;
+      button.innerHTML = `
+        <img class="map-thumb" alt="" src="${mapInfo.thumbnail || defaultMapThumbnailDataUrl(mapInfo)}" />
+        <span>
+          <span class="map-name">${escapeHtml(mapInfo.name || mapInfo.id)}</span>
+          <span class="map-meta">${mapInfo.width || "?"}x${mapInfo.height || "?"}</span>
+        </span>
+      `;
+      button.addEventListener("click", () => selectMap(mapInfo.id));
+      return button;
+    })
+  );
+}
+
+async function selectMap(mapId) {
+  try {
+    const response = await fetch(`${basePath}/api/game/new`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mapId })
+    });
+    const state = await response.json();
+    previousState = null;
+    applyState(state);
+    await loadQr();
+  } catch (error) {
+    showDisplayError(`Chargement du plateau impossible: ${error.message || error}`);
+  }
+}
+
+function defaultMapThumbnailDataUrl(mapInfo) {
+  const width = Math.max(1, mapInfo.width || 12);
+  const height = Math.max(1, mapInfo.height || 12);
+  const cell = 8;
+  const canvas = document.createElement("canvas");
+  canvas.width = width * cell;
+  canvas.height = height * cell;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#2f373d";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = "#46515a";
+  ctx.lineWidth = 1;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      ctx.strokeRect(x * cell + 0.5, y * cell + 0.5, cell, cell);
+    }
+  }
+
+  return canvas.toDataURL("image/png");
+}
+
+function showDisplayError(message) {
+  if (!displayError) return;
+  displayError.textContent = message;
+  displayError.classList.remove("hidden");
+}
+
+function hideDisplayError() {
+  displayError?.classList.add("hidden");
 }
 
 async function loadPhaser() {
@@ -97,32 +269,317 @@ function renderPlayers(state) {
   );
 }
 
-function renderBoard(scene, state) {
+function renderBoard(scene, state, previous = null) {
+  scene.tweens.killAll();
+  scene.time.removeAllEvents();
   scene.children.removeAll();
-  const tileSize = state.map.tileSize || 72;
-  const offsetX = Math.floor((1560 - state.map.width * tileSize) / 2);
-  const offsetY = Math.floor((1080 - state.map.height * tileSize) / 2);
+  if (!state?.map) {
+    showDisplayError("Etat de partie invalide: carte absente.");
+    return;
+  }
+  const width = scene.scale.width || 1560;
+  const height = scene.scale.height || 1080;
+  const tileSize = Math.max(24, Math.floor(Math.min(width / state.map.width, height / state.map.height)));
+  const offsetX = Math.floor((width - state.map.width * tileSize) / 2);
+  const offsetY = Math.floor((height - state.map.height * tileSize) / 2);
   const specialTiles = new Map(state.map.tiles.map((tile) => [`${tile.x},${tile.y}`, tile]));
+  const previousRobots = new Map((previous?.robots || []).map((robot) => [robot.id, robot]));
+  const changedEvents = newEvents(previous, state);
+  const robotSprites = new Map();
 
   for (let y = 0; y < state.map.height; y += 1) {
     for (let x = 0; x < state.map.width; x += 1) {
       const tile = specialTiles.get(`${x},${y}`) || { x, y, floor: "normal" };
       const px = offsetX + x * tileSize;
       const py = offsetY + y * tileSize;
-      scene.add.image(px, py, tile.floor === "pit" ? "floor_pit" : "floor_normal").setOrigin(0);
-      if (tile.checkpoint) scene.add.image(px, py, `checkpoint_${tile.checkpoint}`).setOrigin(0);
-      if (tile.spawn) scene.add.image(px, py, `spawn_${tile.spawn}`).setOrigin(0);
-      if (tile.pusher) addOriented(scene, "pusher", tile.pusher.direction, px, py, tileSize);
-      if (tile.crusher) scene.add.image(px, py, "crusher_idle").setOrigin(0);
+      drawBoardTile(scene, tile, px, py, tileSize);
     }
   }
 
   for (const robot of state.robots) {
-    const px = offsetX + robot.x * tileSize + tileSize / 2;
-    const py = offsetY + robot.y * tileSize + tileSize / 2;
-    const sprite = scene.add.image(px, py, "robot_idle").setDisplaySize(52, 52);
-    sprite.rotation = directionAngle(robot.direction);
+    const basis = previousRobots.get(robot.id) || robot;
+    const sprite = scene.add.image(
+      offsetX + basis.x * tileSize + tileSize / 2,
+      offsetY + basis.y * tileSize + tileSize / 2,
+      "robot_idle"
+    ).setDisplaySize(52, 52);
+    sprite.alpha = basis.holographic ? 0.55 : 1;
+    sprite.rotation = directionAngle(basis.direction);
+    robotSprites.set(robot.id, sprite);
   }
+  playEventTimeline(scene, state, changedEvents, robotSprites, tileSize, offsetX, offsetY);
+}
+
+function drawLaserEffect(scene, state, event, tileSize, offsetX, offsetY) {
+  const robots = new Map(state.robots.map((robot) => [robot.id, robot]));
+  const start = laserStartPoint(event, robots, tileSize, offsetX, offsetY);
+  const hitRobot = robots.get(event.hitRobotId);
+  if (!start || !hitRobot) return;
+  const end = cellCenter(hitRobot.x, hitRobot.y, tileSize, offsetX, offsetY);
+  const beam = scene.add.graphics();
+  beam.lineStyle(Math.max(5, (event.power || 1) * 4), 0xfff27a, 0.95);
+  beam.beginPath();
+  beam.moveTo(start.x, start.y);
+  beam.lineTo(end.x, end.y);
+  beam.strokePath();
+  scene.tweens.add({
+    targets: beam,
+    alpha: 0,
+    duration: 320,
+    ease: "Cubic.easeOut",
+    onComplete: () => beam.destroy()
+  });
+}
+
+function laserStartPoint(event, robots, tileSize, offsetX, offsetY) {
+  if (event.source === "board_laser") {
+    const [x, y] = String(event.sourceId || "").split(",").map(Number);
+    if (Number.isFinite(x) && Number.isFinite(y)) return cellCenter(x, y, tileSize, offsetX, offsetY);
+  }
+  const sourceRobot = robots.get(event.sourceId);
+  return sourceRobot ? cellCenter(sourceRobot.x, sourceRobot.y, tileSize, offsetX, offsetY) : null;
+}
+
+function cellCenter(x, y, tileSize, offsetX, offsetY) {
+  return { x: offsetX + x * tileSize + tileSize / 2, y: offsetY + y * tileSize + tileSize / 2 };
+}
+
+function playEventTimeline(scene, state, events, robotSprites, tileSize, offsetX, offsetY) {
+  if (!events.length) {
+    syncRobotSpritesToState(robotSprites, state, tileSize, offsetX, offsetY);
+    return;
+  }
+  let cursor = 0;
+  for (const event of events) {
+    const delay = cursor;
+    const duration = timelineEventDuration(event);
+    scene.time.delayedCall(delay, () => playTimelineEvent(scene, state, event, robotSprites, tileSize, offsetX, offsetY, duration));
+    cursor += duration;
+  }
+  scene.time.delayedCall(cursor + 20, () => syncRobotSpritesToState(robotSprites, state, tileSize, offsetX, offsetY));
+}
+
+function playTimelineEvent(scene, state, event, robotSprites, tileSize, offsetX, offsetY, duration) {
+  const sprite = robotSprites.get(event.robotId);
+  if (event.type === "robot_moved" && sprite) {
+    tweenRobot(scene, sprite, event.x, event.y, tileSize, offsetX, offsetY, duration);
+  } else if ((event.type === "robot_rotated" || event.type === "conveyor_rotated") && sprite) {
+    tweenRobotRotation(scene, sprite, event.direction, duration);
+  } else if (event.type === "robot_respawned" && sprite) {
+    sprite.setPosition(offsetX + event.x * tileSize + tileSize / 2, offsetY + event.y * tileSize + tileSize / 2);
+    flashRobot(scene, sprite);
+  } else if (event.type === "robot_damaged" && sprite) {
+    flashRobot(scene, sprite);
+  } else if (event.type === "robot_materialized" && sprite) {
+    scene.tweens.add({ targets: sprite, alpha: 1, duration: Math.max(250, duration), ease: "Cubic.easeOut" });
+  } else if (event.type === "laser_fired" && event.hitRobotId) {
+    drawLaserEffect(scene, state, event, tileSize, offsetX, offsetY);
+  }
+}
+
+function timelineEventDuration(event) {
+  if (event.type === "robot_moved" || event.type === "robot_rotated" || event.type === "conveyor_rotated") return 1000;
+  if (event.type === "laser_fired") return event.hitRobotId ? 360 : 80;
+  if (event.type === "robot_damaged" || event.type === "robot_respawned" || event.type === "robot_materialized") return 320;
+  return 80;
+}
+
+function tweenRobot(scene, sprite, x, y, tileSize, offsetX, offsetY, duration) {
+  scene.tweens.add({
+    targets: sprite,
+    x: offsetX + x * tileSize + tileSize / 2,
+    y: offsetY + y * tileSize + tileSize / 2,
+    duration,
+    ease: "Cubic.easeInOut"
+  });
+}
+
+function tweenRobotRotation(scene, sprite, direction, duration) {
+  const targetRotation = directionAngle(direction);
+  scene.tweens.add({
+    targets: sprite,
+    rotation: nearestAngle(sprite.rotation, targetRotation),
+    duration,
+    ease: "Cubic.easeInOut"
+  });
+}
+
+function flashRobot(scene, sprite) {
+  scene.tweens.add({ targets: sprite, alpha: 0.2, yoyo: true, repeat: 3, duration: 80 });
+}
+
+function syncRobotSpritesToState(robotSprites, state, tileSize, offsetX, offsetY) {
+  for (const robot of state.robots) {
+    const sprite = robotSprites.get(robot.id);
+    if (!sprite) continue;
+    sprite.setPosition(offsetX + robot.x * tileSize + tileSize / 2, offsetY + robot.y * tileSize + tileSize / 2);
+    sprite.rotation = directionAngle(robot.direction);
+    sprite.alpha = robot.holographic ? 0.55 : 1;
+  }
+}
+
+function drawBoardTile(scene, tile, px, py, tileSize) {
+  if (tile.floor === "pit") {
+    addPitTile(scene, tile, px, py, tileSize);
+  } else {
+    addFloorTile(scene, tile, px, py, tileSize);
+    addZoneTile(scene, tile, px, py, tileSize);
+    if (tile.conveyor) addConveyorTile(scene, tile.conveyor, px, py, tileSize);
+    if (tile.rotator) addRotatorTile(scene, tile.rotator, px, py, tileSize);
+    if (tile.laser) addLaserTile(scene, tile.laser, px, py, tileSize);
+    if (tile.crusher) addCrusherTile(scene, tile.crusher, px, py, tileSize);
+    if (tile.pusher) addGeneratedOriented(scene, "pusher", tile.pusher.direction, px, py, tileSize);
+    if (tile.walls) addWallTiles(scene, tile.walls, px, py, tileSize);
+  }
+}
+
+function addFloorTile(scene, tile, px, py, tileSize) {
+  if (scene.textures.exists("floor_tiles")) {
+    const floor = scene.add.image(px + tileSize / 2, py + tileSize / 2, "floor_tiles", FLOOR_FRAMES[stableTileValue(tile.x, tile.y) % FLOOR_FRAMES.length]);
+    floor.setDisplaySize(tileSize, tileSize);
+    floor.rotation = (stableTileValue(tile.x + 17, tile.y + 31) % 4) * Math.PI / 2;
+    return;
+  }
+  scene.add.image(px, py, "floor_normal").setOrigin(0).setDisplaySize(tileSize, tileSize);
+}
+
+function addPitTile(scene, tile, px, py, tileSize) {
+  if (scene.textures.exists("pit_tiles")) {
+    scene.add.image(px + tileSize / 2, py + tileSize / 2, "pit_tiles", PIT_FRAMES.single).setDisplaySize(tileSize, tileSize);
+    return;
+  }
+  scene.add.image(px, py, "floor_pit").setOrigin(0).setDisplaySize(tileSize, tileSize);
+}
+
+function addZoneTile(scene, tile, px, py, tileSize) {
+  if (!scene.textures.exists("zone_tiles")) {
+    if (tile.checkpoint) scene.add.image(px, py, `checkpoint_${Math.min(tile.checkpoint, 2)}`).setOrigin(0).setDisplaySize(tileSize, tileSize);
+    if (tile.spawn) scene.add.image(px, py, `spawn_${Math.min(tile.spawn, 8)}`).setOrigin(0).setDisplaySize(tileSize, tileSize);
+    return;
+  }
+  const frame = zoneFrameFor(tile);
+  if (frame === null) return;
+  scene.add.image(px + tileSize / 2, py + tileSize / 2, "zone_tiles", frame).setDisplaySize(tileSize, tileSize);
+}
+
+function zoneFrameFor(tile) {
+  if (tile.repair === 1) return ZONE_FRAMES.repair1;
+  if (tile.repair === 2) return ZONE_FRAMES.repair2;
+  if (tile.spawn) return ZONE_FRAMES.spawn;
+  if (tile.checkpoint) return ZONE_FRAMES.checkpoints[tile.checkpoint - 1] ?? ZONE_FRAMES.checkpoints[0];
+  return null;
+}
+
+function addConveyorTile(scene, conveyor, px, py, tileSize) {
+  if (!scene.textures.exists("conveyor_tiles")) return;
+  const transform = conveyorTransform(conveyor);
+  const sprite = scene.add.image(px + tileSize / 2, py + tileSize / 2, "conveyor_tiles", transform.frame);
+  sprite.setDisplaySize(tileSize, tileSize);
+  sprite.rotation = transform.rotation;
+  sprite.setFlipX(Boolean(transform.flipX));
+  sprite.setFlipY(Boolean(transform.flipY));
+}
+
+function addRotatorTile(scene, rotator, px, py, tileSize) {
+  if (!scene.textures.exists("gear_tiles")) return;
+  const frame = rotator.direction === "ccw" || rotator.direction === "counterclockwise" ? 5 : 4;
+  scene.add.image(px + tileSize / 2, py + tileSize / 2, "gear_tiles", frame).setDisplaySize(tileSize, tileSize);
+}
+
+function addLaserTile(scene, laser, px, py, tileSize) {
+  if (!scene.textures.exists("laser_tiles")) return;
+  const power = Math.max(1, Math.min(3, laser.power || 1));
+  if (laser.beam) {
+    const beam = scene.add.image(px + tileSize / 2, py + tileSize / 2, "laser_tiles", LASER_FRAMES.beamsNorthSouth[power - 1]);
+    beam.setDisplaySize(tileSize, tileSize);
+    beam.rotation = laser.beam === "east-west" ? Math.PI / 2 : 0;
+  }
+  if (laser.emitter) {
+    const emitter = scene.add.image(px + tileSize / 2, py + tileSize / 2, "laser_tiles", LASER_FRAMES.emittersNorth[power - 1]);
+    emitter.setDisplaySize(tileSize, tileSize);
+    emitter.rotation = directionRotationFromNorth(laser.direction || "north");
+  }
+}
+
+function addCrusherTile(scene, crusher, px, py, tileSize) {
+  if (!scene.textures.exists("crusher_tiles")) {
+    scene.add.image(px, py, "crusher_idle").setOrigin(0).setDisplaySize(tileSize, tileSize);
+    return;
+  }
+  const rotation = crusher.variant === "conveyor" ? rotationFromEast(crusher.direction || "east") : 0;
+  const frame = crusher.variant === "conveyor" ? CRUSHER_FRAMES.conveyor : CRUSHER_FRAMES.plain;
+  const sprite = scene.add.image(px + tileSize / 2, py + tileSize / 2, "crusher_tiles", frame);
+  sprite.setDisplaySize(tileSize, tileSize);
+  sprite.rotation = rotation;
+  for (const marker of crusherSegmentMarkers(crusher.activeRegisters)) {
+    const icon = scene.add.image(px + tileSize / 2, py + tileSize / 2, "crusher_tiles", marker.frame);
+    icon.setDisplaySize(tileSize, tileSize);
+    icon.rotation = rotation;
+  }
+}
+
+function addWallTiles(scene, walls, px, py, tileSize) {
+  if (!scene.textures.exists("wall_tiles")) return;
+  for (const wall of walls) {
+    const sprite = scene.add.image(px + tileSize / 2, py + tileSize / 2, "wall_tiles", 7);
+    sprite.setDisplaySize(tileSize, tileSize);
+    sprite.rotation = { west: 0, north: Math.PI / 2, east: Math.PI, south: -Math.PI / 2 }[wall] || 0;
+  }
+}
+
+function addGeneratedOriented(scene, key, direction, x, y, tileSize) {
+  const sprite = scene.add.image(x, y, `${key}_idle`).setOrigin(0).setDisplaySize(tileSize, tileSize);
+  sprite.rotation = directionAngle(direction);
+}
+
+function conveyorTransform(conveyor) {
+  if (conveyor.shape === "merge") {
+    return {
+      frame: conveyor.type === "fast" ? CONVEYOR_FRAMES.fastMerge : CONVEYOR_FRAMES.merge,
+      rotation: rotationFromEast(conveyor.direction || "east"),
+      flipY: Boolean(conveyor.flipped)
+    };
+  }
+  if (conveyor.shape === "turn" || conveyor.turn) return conveyorTurnTransform(conveyor);
+  return {
+    frame: conveyor.type === "fast" ? CONVEYOR_FRAMES.fastStraight : CONVEYOR_FRAMES.straight,
+    rotation: rotationFromWest(conveyor.direction || "west")
+  };
+}
+
+function conveyorTurnTransform(conveyor) {
+  const from = conveyor.from || "east";
+  const to = conveyor.to || turnDirectionForFrameOne(from, conveyor.turn || "right");
+  const transforms = conveyor.type === "fast" ? FAST_TURN_TRANSFORMS : TURN_TRANSFORMS;
+  const turnFrame = conveyor.type === "fast" ? CONVEYOR_FRAMES.fastTurnRight : CONVEYOR_FRAMES.turnRight;
+  return transforms[`${from}:${to}`] || { frame: turnFrame, rotation: 0, flipX: false, flipY: conveyor.type === "fast" };
+}
+
+function turnDirectionForFrameOne(direction, turn) {
+  const directions = ["north", "east", "south", "west"];
+  const index = directions.indexOf(direction);
+  const delta = turn === "right" ? -1 : 1;
+  return directions[(index + delta + directions.length) % directions.length];
+}
+
+function crusherSegmentMarkers(activeRegisters = []) {
+  return [...new Set(activeRegisters.map(Number).filter((item) => Number.isInteger(item) && item >= 1 && item <= 5))]
+    .sort((a, b) => a - b)
+    .slice(0, 2)
+    .map((register, index) => ({
+      register,
+      frame: index === 0 ? CRUSHER_FRAMES.topSegmentStart + register - 1 : CRUSHER_FRAMES.bottomSegmentStart + register - 1
+    }));
+}
+
+function newEvents(previous, state) {
+  if (!previous || previous.id !== state.id) return [];
+  const previousLength = previous.eventLog?.length || 0;
+  return (state.eventLog || []).slice(Math.min(previousLength, state.eventLog?.length || 0));
+}
+
+function nearestAngle(from, to) {
+  return from + Phaser.Math.Angle.Wrap(to - from);
 }
 
 function addOriented(scene, key, direction, x, y, tileSize) {
@@ -132,6 +589,22 @@ function addOriented(scene, key, direction, x, y, tileSize) {
 
 function directionAngle(direction) {
   return { north: -Math.PI / 2, east: 0, south: Math.PI / 2, west: Math.PI }[direction] || 0;
+}
+
+function directionRotationFromNorth(direction) {
+  return { north: 0, east: Math.PI / 2, south: Math.PI, west: -Math.PI / 2 }[direction] || 0;
+}
+
+function rotationFromWest(direction) {
+  return { west: 0, north: Math.PI / 2, east: Math.PI, south: -Math.PI / 2 }[direction] || 0;
+}
+
+function rotationFromEast(direction) {
+  return { east: 0, south: Math.PI / 2, west: Math.PI, north: -Math.PI / 2 }[direction] || 0;
+}
+
+function stableTileValue(x, y) {
+  return Math.abs((x * 73856093) ^ (y * 19349663));
 }
 
 function createGeneratedSprites(scene) {

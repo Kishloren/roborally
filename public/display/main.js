@@ -1,6 +1,6 @@
 const qrImage = document.querySelector("#join-qr");
 const joinLink = document.querySelector("#join-link");
-const joinUrl = document.querySelector("#join-url");
+const startGameButton = document.querySelector("#start-game");
 const resolveNextButton = document.querySelector("#resolve-next");
 const mapList = document.querySelector("#map-list");
 const players = document.querySelector("#players");
@@ -40,7 +40,9 @@ let previousState = null;
 let sceneRef = null;
 let pollingTimer = null;
 let availableMaps = [];
+let resolutionAnimationLocked = false;
 
+startGameButton.addEventListener("click", startGame);
 resolveNextButton.addEventListener("click", resolveNextRegister);
 
 try {
@@ -88,6 +90,7 @@ function preload() {
   this.load.spritesheet("zone_tiles", `${basePath}/shared/assets/images/zones.png`, { frameWidth: 66, frameHeight: 66 });
   this.load.spritesheet("laser_tiles", `${basePath}/shared/assets/images/lasers.png`, { frameWidth: 66, frameHeight: 66 });
   this.load.spritesheet("crusher_tiles", `${basePath}/shared/assets/images/crush.png`, { frameWidth: 66, frameHeight: 66 });
+  this.load.spritesheet("robot_tiles", `${basePath}/shared/assets/images/robots.png`, { frameWidth: 256, frameHeight: 256 });
 }
 
 function create() {
@@ -96,19 +99,20 @@ function create() {
   this.scale.on("resize", () => {
     if (latestState) renderBoard(this, latestState);
   });
-  if (latestState) renderBoard(this, latestState);
+  if (latestState) {
+    renderPlayers(latestState);
+    renderBoard(this, latestState);
+  }
 }
 
 function update() {}
 
 async function loadQr() {
   const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const response = await fetch(`${basePath}/api/game/qr?t=${encodeURIComponent(nonce)}`, { cache: "no-store" });
-  const payload = await response.json();
+  const payload = await fetchJson(`${basePath}/api/game/qr?t=${encodeURIComponent(nonce)}`, { cache: "no-store" });
   qrImage.removeAttribute("src");
   qrImage.src = payload.qr;
   joinLink.href = payload.url;
-  joinUrl.textContent = payload.url;
 }
 
 async function pollState() {
@@ -142,26 +146,69 @@ function stopPolling() {
 }
 
 async function resolveNextRegister() {
+  resolutionAnimationLocked = true;
   resolveNextButton.disabled = true;
   try {
-    const response = await fetch(`${basePath}/api/game/resolve-next`, { method: "POST" });
-    const payload = await response.json();
+    const payload = await fetchJson(`${basePath}/api/game/resolve-next`, { method: "POST" });
     if (!payload.ok) throw new Error(payload.error || "Resolution impossible");
     applyState(payload.state);
+    window.setTimeout(() => {
+      resolutionAnimationLocked = false;
+      updateControls(latestState);
+    }, timelineDurationForEvents(payload.events || []));
   } catch (error) {
     console.warn(error);
-  } finally {
-    resolveNextButton.disabled = false;
+    resolutionAnimationLocked = false;
+    updateControls(latestState);
   }
+}
+
+async function startGame() {
+  startGameButton.disabled = true;
+  try {
+    const payload = await fetchJson(`${basePath}/api/game/start`, { method: "POST" });
+    if (!payload.ok) throw new Error(payload.error || "Demarrage impossible");
+    applyState(payload.state);
+  } catch (error) {
+    showDisplayError(`Demarrage impossible: ${error.message || error}`);
+  } finally {
+    updateControls(latestState);
+  }
+}
+
+async function fetchJson(url, options) {
+  const response = await fetch(url, options);
+  const contentType = response.headers.get("content-type") || "";
+  const text = await response.text();
+  if (!contentType.includes("application/json")) {
+    throw new Error(`Reponse non JSON (${response.status}) sur ${url}: ${text.slice(0, 80)}`);
+  }
+  return JSON.parse(text);
 }
 
 function applyState(state) {
   hideDisplayError();
   previousState = latestState;
   latestState = state;
+  updateDisplayMode(state);
   renderPlayers(state);
   renderMapList();
+  updateControls(state);
   if (sceneRef) renderBoard(sceneRef, state, previousState);
+}
+
+function updateDisplayMode(state) {
+  document.querySelector("#side-panel")?.classList.toggle("game-running", state?.phase !== "lobby");
+}
+
+function updateControls(state) {
+  const playerCount = state?.players?.length || 0;
+  startGameButton.disabled = state?.phase !== "lobby" || playerCount === 0;
+  resolveNextButton.disabled = resolutionAnimationLocked || !["ready_to_resolve", "resolution"].includes(state?.phase);
+}
+
+function timelineDurationForEvents(events) {
+  return Math.max(350, events.reduce((total, event) => total + timelineEventDuration(event), 0) + 80);
 }
 
 function renderMapList() {
@@ -259,14 +306,146 @@ function loadScript(src) {
 }
 
 function renderPlayers(state) {
+  const robotsByPlayer = new Map((state.robots || []).map((robot) => [robot.playerId, robot]));
+  const showProgram = shouldShowProgram(state);
   players.replaceChildren(
     ...state.players.map((player) => {
+      const robot = robotsByPlayer.get(player.id);
+      const health = healthValue(robot);
+      const checkpoint = checkpointValue(robot);
       const row = document.createElement("div");
       row.className = "player-row";
-      row.innerHTML = `<span>${escapeHtml(player.name)}</span><strong>${player.ready ? "Ready" : "Lobby"}</strong>`;
+      row.innerHTML = `
+        <div class="robot-icon" aria-hidden="true">
+          <span class="robot-icon-sprite" style="${robotSpriteStyle(player.robotId, robot?.direction)}"></span>
+        </div>
+        <div class="player-health-disk">${healthDiskMarkup(9, health, checkpoint)}</div>
+        <div class="player-summary">
+          ${showProgram ? `<div class="player-program" style="${programColumnStyle(state.register)}">${programCards(player.programCards, state.register)}</div>` : ""}
+        </div>
+      `;
       return row;
     })
   );
+}
+
+function shouldShowProgram(state) {
+  return ["ready_to_resolve", "resolution"].includes(state?.phase)
+    && state.players.length > 0
+    && state.players.every((player) => player.programSubmitted);
+}
+
+function robotSpriteStyle(robotId, direction = "east") {
+  const frame = Math.max(0, Math.min(7, Number(String(robotId || "").replace("robot_", "")) - 1 || 0));
+  const position = frame === 0 ? 0 : frame * 100 / 7;
+  return [
+    `background-image:url('${basePath}/shared/assets/images/robots.png')`,
+    "background-size:800% 100%",
+    `background-position:${position}% 0`,
+    `transform:rotate(${directionAngle(direction)}rad)`
+  ].join(";");
+}
+
+function healthValue(robot) {
+  return Math.max(0, 9 - (Number(robot?.damage) || 0));
+}
+
+function checkpointValue(robot) {
+  return Number(robot?.checkpoint) || 0;
+}
+
+function healthDiskMarkup(max, current, checkpoint) {
+  const textureKey = createHealthDisk(max, current, checkpoint);
+  if (!textureKey || !sceneRef?.textures.exists(textureKey)) {
+    return "";
+  }
+  const src = sceneRef.textures.getBase64(textureKey);
+  return `<img class="health-disk" alt="${current}/${max} PV" src="${src}" />`;
+}
+
+function createHealthDisk(max, current, checkpoint = 0) {
+  if (!sceneRef) return "";
+  const cleanMax = Math.max(1, Math.round(Number(max) || 1));
+  const cleanCurrent = Math.max(0, Math.min(cleanMax, Math.round(Number(current) || 0)));
+  const cleanCheckpoint = Math.max(0, Math.round(Number(checkpoint) || 0));
+  const textureKey = `health_disk_${cleanMax}_${cleanCurrent}_${cleanCheckpoint}`;
+  if (sceneRef.textures.exists(textureKey)) return textureKey;
+
+  const size = 64;
+  const center = size / 2;
+  const radius = 28;
+  const gap = 0.035;
+  const litColor = cleanCurrent >= cleanMax - 2 ? 0x19c37d : cleanCurrent <= 5 ? 0xff4d5e : 0xffa927;
+  const texture = sceneRef.textures.createCanvas(textureKey, size, size);
+  const context = texture.getContext();
+  context.clearRect(0, 0, size, size);
+
+  for (let index = 0; index < cleanMax; index += 1) {
+    const start = -Math.PI / 2 + index * Math.PI * 2 / cleanMax + gap;
+    const end = -Math.PI / 2 + (index + 1) * Math.PI * 2 / cleanMax - gap;
+    context.beginPath();
+    context.moveTo(center, center);
+    context.arc(center, center, radius, start, end, false);
+    context.closePath();
+    context.fillStyle = `#${(index < cleanCurrent ? litColor : 0x293038).toString(16).padStart(6, "0")}`;
+    context.fill();
+    context.lineWidth = 1;
+    context.strokeStyle = "#101316";
+    context.stroke();
+  }
+
+  context.beginPath();
+  context.arc(center, center, radius * 0.42, 0, Math.PI * 2);
+  context.fillStyle = "#101316";
+  context.fill();
+  context.lineWidth = 2;
+  context.strokeStyle = "rgba(220,229,236,0.55)";
+  context.beginPath();
+  context.arc(center, center, radius, 0, Math.PI * 2);
+  context.stroke();
+
+  context.fillStyle = "#dce5ec";
+  context.beginPath();
+  context.arc(center, center, 12, 0, Math.PI * 2);
+  context.fill();
+  context.fillStyle = "#101316";
+  context.beginPath();
+  context.arc(center, center, 11, 0, Math.PI * 2);
+  context.fill();
+  context.strokeStyle = "#dce5ec";
+  context.lineWidth = 1.5;
+  context.stroke();
+  context.fillStyle = "#ffffff";
+  context.font = "bold 17px Arial";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(cleanCheckpoint > 0 ? String(cleanCheckpoint) : "D", center, center + 0.5);
+  texture.refresh();
+  return textureKey;
+}
+
+function programCards(cards = [], currentRegister = 0) {
+  return cards.map((card, index) => card
+    ? `<span class="mini-card${index === currentRegister ? " current" : ""}"><span>${card.priority}</span><strong>${cardSymbol(card)}</strong></span>`
+    : `<span class="mini-card empty${index === currentRegister ? " current" : ""}"></span>`
+  ).join("");
+}
+
+function programColumnStyle(currentRegister = 0) {
+  const index = Math.max(0, Math.min(4, Number(currentRegister) || 0));
+  const cardWidth = 40;
+  const gap = 4;
+  const x = index * (cardWidth + gap);
+  return `--current-register-x:${x}px;--current-register-width:${cardWidth}px;`;
+}
+
+function cardSymbol(card) {
+  if (card.type === "move_1" || card.type === "move_2" || card.type === "move_3") return `↑${card.distance || 1}`;
+  if (card.type === "backup") return "↓";
+  if (card.type === "rotate_right") return "↱";
+  if (card.type === "rotate_left") return "↰";
+  if (card.type === "u_turn") return "↶";
+  return "?";
 }
 
 function renderBoard(scene, state, previous = null) {
@@ -298,11 +477,14 @@ function renderBoard(scene, state, previous = null) {
 
   for (const robot of state.robots) {
     const basis = previousRobots.get(robot.id) || robot;
+    const frame = Math.max(0, Math.min(7, Number(String(robot.id || "").replace("robot_", "")) - 1 || 0));
+    const key = scene.textures.exists("robot_tiles") ? "robot_tiles" : "robot_idle";
     const sprite = scene.add.image(
       offsetX + basis.x * tileSize + tileSize / 2,
       offsetY + basis.y * tileSize + tileSize / 2,
-      "robot_idle"
-    ).setDisplaySize(52, 52);
+      key,
+      key === "robot_tiles" ? frame : undefined
+    ).setDisplaySize(tileSize * 0.82, tileSize * 0.82);
     sprite.alpha = basis.holographic ? 0.55 : 1;
     sprite.rotation = directionAngle(basis.direction);
     robotSprites.set(robot.id, sprite);

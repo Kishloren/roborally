@@ -10,7 +10,8 @@ Adaptation numerique de RoboRally avec :
 - une interface smartphone par joueur, forcee en paysage autant que possible ;
 - directive prioritaire : l'interface joueur doit etre rendue et pilotee uniquement par Phaser ; le DOM ne sert qu'a monter le canvas et charger les scripts ;
 - cote player, le viewport, le canvas, les coordonnees d'interaction, le boot, le titre et l'interface de jeu sont geres par Phaser ;
-- le player utilise une scene logique fixe Full HD `1920x1080`, adaptee a l'ecran par Phaser avec `Scale.FIT` ;
+- le player utilise une hauteur logique fixe Full HD `1080`; la largeur logique est calculee au plein ecran depuis le ratio paysage disponible, avec un minimum de `1920` ;
+- le volet cartes joueur occupe toujours `640x1080`; le plateau occupe toute la largeur restante ;
 - le player ne redimensionne plus le DOM ni le canvas manuellement depuis JavaScript ;
 - le plein ecran et le verrouillage paysage sont demandes via le Scale Manager Phaser quand disponible ;
 - les evenements `resize`, `orientationchange`, `fullscreenchange` et `visualViewport.resize` ne recalculent plus l'interface joueur ; ils redemandent seulement le verrouillage paysage ;
@@ -46,7 +47,12 @@ Display :
 
 - le QR code joueur est cliquable et ouvre `/player/` dans un nouvel onglet ;
 - l'URL du QR code contient des parametres `join` et `v` regeneres a chaque appel de `/api/game/qr`, afin d'eviter les problemes de cache cote player ;
+- le bouton `Demarrer la partie` appelle `POST /api/game/start`, passe la partie de `lobby` a `programming`, initialise `turn` a `1` et ouvre la programmation aux joueurs ;
+- des que la partie demarre, le QR code, la selection de plateau et le bouton de demarrage disparaissent du display ;
+- la colonne droite devient le suivi des joueurs : icone du robot orientee en temps reel, points de vie, puis programme visible uniquement quand tous les joueurs ont fini leur programmation ;
 - le bouton `Resoudre registre` appelle `POST /api/game/resolve-next` pour faciliter les tests de resolution.
+- `POST /api/game/resolve-next` avance maintenant d'un seul pas de cinematique : une carte robot par clic en priorite decroissante, puis une passe convoyeurs rapides, puis une passe convoyeurs rapides + normaux, puis les lasers ;
+- le bouton de resolution est verrouille pendant la duree estimee de l'animation pour eviter d'empiler des clics et de rendre les deplacements instantanes ;
 - le panneau droit affiche la liste des plateaux disponibles via `/api/maps` ;
 - chaque plateau est presente avec son nom, ses dimensions et la miniature stockee dans son JSON ;
 - cliquer sur un plateau appelle `POST /api/game/new` avec son `mapId` et demarre une nouvelle partie sur ce plateau.
@@ -98,10 +104,14 @@ Objectif :
 
 Etat initial des robots :
 
+- il n'y a qu'une case depart par carte, affichee avec la frame `2` de `zones.png` ;
+- tous les robots demarrent sur cette meme case depart ;
 - chaque robot commence avec `3` vies ;
 - chaque robot commence avec `9` points de vie, donc `0` degat ;
 - chaque robot dispose d'un laser frontal ;
-- au depart, les robots sont holographiques pour permettre a plusieurs robots d'occuper la meme case.
+- au depart, les robots sont holographiques pour permettre a plusieurs robots d'occuper la meme case ;
+- au premier tour du robot, chaque joueur doit choisir l'orientation initiale parmi nord/est/sud/ouest pendant la programmation ; le choix est valide en meme temps que le programme via le drapeau explicite `pendingOrientation`.
+- les icones de choix d'orientation joueur viennent de `orient.png`, spritesheet `400x100` de 4 frames `100x100` dans l'ordre `west, north, east, south` ;
 
 Hologrammes :
 
@@ -114,6 +124,7 @@ Hologrammes :
 Tours et segments :
 
 - un tour contient `5` segments ;
+- la partie demarre explicitement depuis le display : avant cela, la phase reste `lobby` et les joueurs attendent sur leur interface ;
 - au debut d'un tour, chaque joueur recoit `9 - degats` cartes ;
 - le joueur programme `5` registres avec les cartes disponibles et les registres non bloques ;
 - pour chaque segment :
@@ -139,7 +150,8 @@ Destruction et respawn :
 - s'il n'a plus de vie, il est elimine definitivement ;
 - sinon il respawn au depart ou au dernier checkpoint valide ;
 - il respawn sous forme holographique ;
-- il respawn avec `2` degats.
+- il respawn avec `2` degats ;
+- apres respawn, le serveur pose `pendingOrientation: true` et le joueur doit choisir la nouvelle orientation pendant la programmation suivante.
 
 Deplacements, murs, trous :
 
@@ -234,16 +246,18 @@ Etat actuel :
 - le plateau est deplacable et zoomable via Phaser ;
 - la carte s'affiche des le chargement de l'etat serveur, meme sans joueur connecte ;
 - les cartes du volet droit sont rendues dans Phaser et restent manipulables par glisser-deplacer apres connexion ;
+- la main joueur est affichee par priorite croissante ;
 - les registres affichent un point vert/rouge pour indiquer libre/bloque ;
 - les registres bloques refusent le drop.
 - le bouton de calibration et l'overlay de debug rouge ont ete retires de l'interface normale.
 
 Layout Phaser player :
 
-- scene logique fixe : `1920x1080` ;
+- hauteur logique fixe : `1080` ;
+- largeur logique dynamique : `max(1920, largeur_paysage / hauteur_paysage * 1080)` ;
 - adaptation ecran : `Phaser.Scale.FIT` ;
-- plateau : `2/3` de la largeur logique ;
-- volet joueur : `1/3` de la largeur logique ;
+- plateau : toute la largeur restante ;
+- volet joueur : `640x1080` ;
 - le layout n'est plus recalcule a chaque rotation ecran ; la rotation redemande seulement le verrouillage paysage.
 
 Drag/drop des cartes :
@@ -519,6 +533,18 @@ La sauvegarde JSON est automatique sur les changements importants :
 
 La reprise actuelle charge `data/saves/latest.json` si present.
 
+Depuis la phase de tests lobby, le comportement par defaut au demarrage serveur est de creer une partie neuve sans joueurs, en conservant la derniere carte connue si `latest.json` existe. Pour reprendre explicitement la sauvegarde complete :
+
+```bash
+RESUME_SAVE=1 npm start
+```
+
+Pour forcer une carte par defaut quand aucune sauvegarde n'existe :
+
+```bash
+DEFAULT_MAP_ID=6x6-1 npm start
+```
+
 ## Commandes utiles
 
 Installer les dependances :
@@ -578,6 +604,14 @@ Le monitoring Stan's Games doit aussi connaitre le service. Voir :
 Le fichier PM2 du projet est :
 
 `ecosystem.config.cjs`
+
+## Lobby et selection des robots
+
+Au chargement du player, la premiere action du joueur est le choix de son robot dans une grille Phaser de 8 sprites. Les robots deja choisis par les autres joueurs sont grises et non cliquables.
+
+Le serveur verifie aussi l'exclusivite du choix : deux joueurs ne peuvent pas rejoindre la partie avec le meme `robotId`.
+
+Le display affiche le QRCode cliquable vers `/player/`, mais n'affiche plus l'adresse en texte afin de garder l'ecran commun lisible.
 
 ## Points a faire ensuite
 

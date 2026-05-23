@@ -13,7 +13,10 @@ export function createStorage(rootDir) {
       const maps = await Promise.all(
         files
           .filter((file) => file.endsWith(".json"))
-          .map(async (file) => readJson(path.join(mapsDir, file)))
+          .map(async (file) => {
+            const map = await readJson(path.join(mapsDir, file));
+            return { ...map, id: path.parse(file).name };
+          })
       );
       return maps.map(({ id, name, width, height, thumbnail }) => ({
         id,
@@ -26,7 +29,8 @@ export function createStorage(rootDir) {
 
     async readMap(mapId) {
       await ensureDirs();
-      return readJson(path.join(mapsDir, `${mapId}.json`));
+      const map = await readJson(path.join(mapsDir, `${mapId}.json`));
+      return { ...map, id: mapId };
     },
 
     async writeMap(map) {

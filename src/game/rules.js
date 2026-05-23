@@ -45,6 +45,93 @@ export function resolveSegment(game, registerIndex = game.register || 0) {
   return events;
 }
 
+export function resolveNextStep(game) {
+  if (!["ready_to_resolve", "resolution"].includes(game.phase)) {
+    throw new Error("La partie n'est pas prete pour la resolution.");
+  }
+  const events = [];
+  game.phase = "resolution";
+  game.status = "resolution";
+
+  const resolution = ensureResolutionState(game);
+  game.register = resolution.register;
+
+  if (resolution.stage === "cards") {
+    const actions = programmedCards(game, resolution.register);
+    const action = actions[resolution.cardIndex];
+    if (action) {
+      events.push({
+        type: "card_activated",
+        playerId: action.player.id,
+        robotId: action.robot.id,
+        cardId: action.card.id,
+        register: resolution.register
+      });
+      executeCard(game, action.robot, action.card, events);
+      events.push({
+        type: "card_resolved",
+        playerId: action.player.id,
+        robotId: action.robot.id,
+        cardId: action.card.id,
+        register: resolution.register
+      });
+      resolution.cardIndex += 1;
+      appendResolutionEvents(game, events);
+      return { stage: "robot_card", events };
+    }
+    resolution.stage = "fast_conveyors";
+  }
+
+  if (resolution.stage === "fast_conveyors") {
+    resolveConveyorWave(game, ["fast"], "fast_conveyors", events);
+    resolution.stage = "all_conveyors";
+    appendResolutionEvents(game, events);
+    return { stage: "fast_conveyors", events };
+  }
+
+  if (resolution.stage === "all_conveyors") {
+    resolveConveyorWave(game, ["fast", "normal"], "all_conveyors", events);
+    resolution.stage = "lasers";
+    appendResolutionEvents(game, events);
+    return { stage: "all_conveyors", events };
+  }
+
+  if (resolution.stage === "lasers") {
+    resolveLasers(game, events);
+    completeRegisterStep(game, events, resolution);
+    appendResolutionEvents(game, events);
+    return { stage: "lasers", events };
+  }
+
+  appendResolutionEvents(game, events);
+  return { stage: "idle", events };
+}
+
+function ensureResolutionState(game) {
+  const register = game.register || 0;
+  if (!game.resolution || game.resolution.register !== register) {
+    game.resolution = { register, stage: "cards", cardIndex: 0 };
+  }
+  return game.resolution;
+}
+
+function completeRegisterStep(game, events, resolution) {
+  game.register = resolution.register + 1;
+  delete game.resolution;
+  if (game.register >= REGISTER_COUNT) {
+    finishTurn(game, events);
+  } else {
+    game.phase = "ready_to_resolve";
+    game.status = "ready_to_resolve";
+  }
+  resetSegmentDestroyedRobots(game);
+}
+
+function appendResolutionEvents(game, events) {
+  game.eventLog.push(...events);
+  game.updatedAt = new Date().toISOString();
+}
+
 function programmedCards(game, registerIndex) {
   return game.players
     .map((player) => {
@@ -272,6 +359,7 @@ function destroyRobot(game, robot, reason, events) {
   robot.direction = respawn.direction || "north";
   robot.damage = 2;
   robot.holographic = true;
+  robot.pendingOrientation = true;
   events.push({ type: "robot_respawned", robotId: robot.id, x: robot.x, y: robot.y });
 }
 

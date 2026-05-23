@@ -9,7 +9,9 @@ import {
   getPublicState,
   joinGame,
   resolveNextRegister,
+  setRobotOrientation,
   setPlayerReady,
+  startGame,
   submitProgram
 } from "../src/game/game.js";
 import { createStorage } from "../src/storage/jsonStorage.js";
@@ -100,10 +102,21 @@ router.post("/api/game/save", async (_req, res) => {
 
 router.post("/api/game/resolve-next", async (_req, res) => {
   try {
-    const events = resolveNextRegister(activeGame);
+    const step = resolveNextRegister(activeGame);
     await storage.writeSave(activeGame);
     broadcastState();
-    res.json({ ok: true, events, state: getPublicState(activeGame) });
+    res.json({ ok: true, step, events: step.events, state: getPublicState(activeGame) });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+router.post("/api/game/start", async (_req, res) => {
+  try {
+    startGame(activeGame);
+    await storage.writeSave(activeGame);
+    broadcastState();
+    res.json({ ok: true, state: getPublicState(activeGame) });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message });
   }
@@ -132,6 +145,17 @@ router.post("/api/player/join", async (req, res) => {
 router.post("/api/player/ready", async (req, res) => {
   try {
     setPlayerReady(activeGame, req.body?.playerId, Boolean(req.body?.ready));
+    await storage.writeSave(activeGame);
+    broadcastState();
+    res.json({ ok: true, state: getPublicState(activeGame) });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+router.post("/api/player/orientation", async (req, res) => {
+  try {
+    setRobotOrientation(activeGame, req.body?.playerId, req.body?.direction);
     await storage.writeSave(activeGame);
     broadcastState();
     res.json({ ok: true, state: getPublicState(activeGame) });
@@ -177,6 +201,17 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("player:orientation", async ({ direction } = {}, reply) => {
+    try {
+      setRobotOrientation(activeGame, socket.data.playerId, direction);
+      await storage.writeSave(activeGame);
+      broadcastState();
+      reply?.({ ok: true });
+    } catch (error) {
+      reply?.({ ok: false, error: error.message });
+    }
+  });
+
   socket.on("player:program", async ({ cards } = {}, reply) => {
     try {
       submitProgram(activeGame, socket.data.playerId, cards);
@@ -203,8 +238,8 @@ server.listen(port, "0.0.0.0", () => {
 
 async function loadOrCreateGame() {
   const latest = await storage.readLatestSave();
-  if (latest) return latest;
-  const map = await storage.readMap("factory-01");
+  if (process.env.RESUME_SAVE === "1" && latest) return latest;
+  const map = latest?.map || await storage.readMap(process.env.DEFAULT_MAP_ID || "factory-01");
   const game = createGame({ map });
   await storage.writeSave(game);
   return game;

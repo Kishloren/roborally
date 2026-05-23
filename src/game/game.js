@@ -1,5 +1,5 @@
 import { createProgramDeck, hydrateCard } from "./cards.js";
-import { blockedRegisterCount, isProgramComplete, resolveSegment } from "./rules.js";
+import { blockedRegisterCount, isProgramComplete, resolveNextStep } from "./rules.js";
 
 const MAX_PLAYERS = 8;
 const HAND_SIZE = 9;
@@ -56,8 +56,8 @@ export function getPublicState(game) {
 export function joinGame(game, { name, robotId, socketId }) {
   if (game.players.length >= MAX_PLAYERS) throw new Error("La partie est complete.");
   const cleanName = String(name || "").trim().slice(0, 24) || `Player ${game.players.length + 1}`;
-  const resolvedRobotId = robotId || `robot_${game.players.length + 1}`;
-  const spawn = findSpawn(game.map, game.players.length + 1);
+  const resolvedRobotId = resolveRobotId(game, robotId);
+  const spawn = findSpawn(game.map);
   const player = {
     id: createId("player"),
     name: cleanName,
@@ -78,6 +78,7 @@ export function joinGame(game, { name, robotId, socketId }) {
     damage: 0,
     lives: 3,
     holographic: true,
+    pendingOrientation: true,
     eliminated: false,
     destroyed: false,
     poweredDown: false,
@@ -90,20 +91,48 @@ export function joinGame(game, { name, robotId, socketId }) {
   return { player, robot };
 }
 
+export function setRobotOrientation(game, playerId, direction) {
+  const player = findPlayer(game, playerId);
+  const robot = game.robots.find((item) => item.playerId === player.id);
+  if (!robot || robot.eliminated) throw new Error("Robot indisponible.");
+  if (!directions.includes(direction)) throw new Error("Orientation invalide.");
+  if (!robot.pendingOrientation) return { player, robot };
+  robot.direction = direction;
+  robot.pendingOrientation = false;
+  game.eventLog.push({ type: "robot_orientation_set", robotId: robot.id, direction, at: new Date().toISOString() });
+  return { player, robot };
+}
+
 export function setPlayerReady(game, playerId, ready) {
   const player = findPlayer(game, playerId);
   player.ready = ready;
   if (game.status === "lobby" && game.players.length > 0 && game.players.every((item) => item.ready)) {
-    game.status = "programming";
-    game.phase = "programming";
-    game.turn = 1;
+    startGame(game);
   }
+}
+
+export function startGame(game) {
+  if (game.status !== "lobby") return game;
+  if (game.players.length === 0) throw new Error("Aucun joueur dans la partie.");
+  game.status = "programming";
+  game.phase = "programming";
+  game.turn = Math.max(1, game.turn || 0);
+  game.register = 0;
+  for (const player of game.players) {
+    player.ready = false;
+    player.program = [];
+  }
+  game.eventLog.push({ type: "game_started", at: new Date().toISOString() });
+  game.updatedAt = new Date().toISOString();
+  return game;
 }
 
 export function submitProgram(game, playerId, cardIds) {
   const player = findPlayer(game, playerId);
   const robot = game.robots.find((item) => item.playerId === playerId);
   if (!robot || robot.eliminated) throw new Error("Robot indisponible.");
+  if (robot.pendingOrientation) throw new Error("Choisis d'abord l'orientation du robot.");
+  if (game.phase !== "programming") throw new Error("La partie n'est pas en phase de programmation.");
   if (!Array.isArray(cardIds) || cardIds.length !== REGISTER_COUNT) {
     throw new Error(`Programme attendu: ${REGISTER_COUNT} cartes.`);
   }
@@ -140,7 +169,7 @@ export function resolveNextRegister(game) {
   if (!["ready_to_resolve", "resolution"].includes(game.phase)) {
     throw new Error("La partie n'est pas prete pour la resolution.");
   }
-  return resolveSegment(game, game.register || 0);
+  return resolveNextStep(game);
 }
 
 function drawCards(game, count) {
@@ -172,9 +201,29 @@ function findPlayer(game, playerId) {
   return player;
 }
 
-function findSpawn(map, number) {
+function resolveRobotId(game, robotId) {
+  const requested = String(robotId || "").trim();
+  const fallback = firstAvailableRobotId(game);
+  const resolved = /^robot_[1-8]$/.test(requested) ? requested : fallback;
+  if (!resolved) throw new Error("Aucun robot disponible.");
+  if (game.players.some((player) => player.robotId === resolved)) {
+    throw new Error("Ce robot est deja choisi.");
+  }
+  return resolved;
+}
+
+function firstAvailableRobotId(game) {
+  const used = new Set(game.players.map((player) => player.robotId));
+  for (let index = 1; index <= MAX_PLAYERS; index += 1) {
+    const robotId = `robot_${index}`;
+    if (!used.has(robotId)) return robotId;
+  }
+  return null;
+}
+
+function findSpawn(map) {
   const fallback = { x: 0, y: 0, direction: "east" };
-  return map.tiles.find((tile) => tile.spawn === number) || fallback;
+  return map.tiles.find((tile) => tile.spawn) || fallback;
 }
 
 function createGameId() {

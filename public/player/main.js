@@ -223,10 +223,14 @@ function drawLaserEffect(scene, boardContainer, state, event, tileSize) {
   const robots = new Map(state.robots.map((robot) => [robot.id, robot]));
   const start = laserStartPoint(event, robots, tileSize);
   const hitRobot = robots.get(event.hitRobotId);
-  if (!start || !hitRobot) return;
-  const end = cellCenter(hitRobot.x, hitRobot.y, tileSize);
+  const end = hitRobot
+    ? cellCenter(hitRobot.x, hitRobot.y, tileSize)
+    : Number.isFinite(event.endX) && Number.isFinite(event.endY)
+      ? cellCenter(event.endX, event.endY, tileSize)
+      : null;
+  if (!start || !end || (start.x === end.x && start.y === end.y)) return;
   const beam = scene.add.graphics();
-  beam.lineStyle(Math.max(4, (event.power || 1) * 3), 0xfff27a, 0.95);
+  beam.lineStyle(Math.max(4, (event.power || 1) * 3), 0xff2020, 0.95);
   beam.beginPath();
   beam.moveTo(start.x, start.y);
   beam.lineTo(end.x, end.y);
@@ -242,6 +246,9 @@ function drawLaserEffect(scene, boardContainer, state, event, tileSize) {
 }
 
 function laserStartPoint(event, robots, tileSize) {
+  if (Number.isFinite(event.sourceX) && Number.isFinite(event.sourceY)) {
+    return cellCenter(event.sourceX, event.sourceY, tileSize);
+  }
   if (event.source === "board_laser") {
     const [x, y] = String(event.sourceId || "").split(",").map(Number);
     if (Number.isFinite(x) && Number.isFinite(y)) return cellCenter(x, y, tileSize);
@@ -269,6 +276,7 @@ function drawPanel(scene, state, player) {
   }
 
   const robot = state.robots.find((item) => item.playerId === player.id);
+  drawRobotStatus(scene, panelRect, robot);
   if (state.phase === "lobby") {
     scene.add.text(panelRect.x + panelRect.width / 2, layout.height * 0.47, "En attente du depart", {
       fontFamily: "Arial",
@@ -287,9 +295,10 @@ function drawPanel(scene, state, player) {
   const cardHeight = Math.floor(cardWidth * CARD_SOURCE.height / CARD_SOURCE.width);
   const gap = Math.floor(cardWidth * 0.12);
   const startX = panelRect.x + Math.floor((panelRect.width - cardWidth * 5 - gap * 4) / 2);
+  const statusHeight = 96;
   const orientationHeight = needsOrientationChoice(robot) ? 150 : 0;
-  if (needsOrientationChoice(robot)) drawOrientationPicker(scene, panelRect, robot);
-  const handY = Math.max(18 + orientationHeight, layout.height * 0.08 + orientationHeight);
+  if (needsOrientationChoice(robot)) drawOrientationPicker(scene, panelRect, robot, statusHeight);
+  const handY = Math.max(18 + statusHeight + orientationHeight, layout.height * 0.08 + statusHeight + orientationHeight);
   const registerY = layout.height - cardHeight - 76;
   const visibleHand = getOrderedHand(player).filter((card) => !program.includes(card.id));
 
@@ -335,26 +344,78 @@ function drawPanel(scene, state, player) {
   submit.on("pointerdown", submitProgram);
 }
 
-function drawOrientationPicker(scene, panelRect, robot) {
+function drawRobotStatus(scene, panelRect, robot) {
+  if (!robot) return;
+  const x = panelRect.x + 26;
+  const y = 22;
+  const icon = scene.add.image(x + 34, y + 34, "robot_tiles", robotFrameIndex(robot)).setDisplaySize(68, 68);
+  icon.rotation = rotationFromEast(robot.direction);
+  icon.alpha = robot.holographic ? 0.58 : 1;
+  const disk = createHealthDiskTexture(scene, 9, Math.max(0, 9 - (Number(robot.damage) || 0)), Number(robot.checkpoint) || 0);
+  scene.add.image(x + 98, y + 34, disk).setDisplaySize(44, 44);
+}
+
+function createHealthDiskTexture(scene, max, current, checkpoint = 0) {
+  const cleanMax = Math.max(1, Math.round(Number(max) || 1));
+  const cleanCurrent = Math.max(0, Math.min(cleanMax, Math.round(Number(current) || 0)));
+  const cleanCheckpoint = Math.max(0, Math.round(Number(checkpoint) || 0));
+  const key = `player_health_disk_${cleanMax}_${cleanCurrent}_${cleanCheckpoint}`;
+  if (scene.textures.exists(key)) return key;
+  const texture = scene.textures.createCanvas(key, 64, 64);
+  const context = texture.getContext();
+  const center = 32;
+  const radius = 28;
+  const lit = cleanCurrent >= cleanMax - 2 ? "#19c37d" : cleanCurrent <= 5 ? "#ff4d5e" : "#ffa927";
+  context.clearRect(0, 0, 64, 64);
+  for (let index = 0; index < cleanMax; index += 1) {
+    const start = -Math.PI / 2 + index * Math.PI * 2 / cleanMax + 0.035;
+    const end = -Math.PI / 2 + (index + 1) * Math.PI * 2 / cleanMax - 0.035;
+    context.beginPath();
+    context.moveTo(center, center);
+    context.arc(center, center, radius, start, end, false);
+    context.closePath();
+    context.fillStyle = index < cleanCurrent ? lit : "#293038";
+    context.fill();
+    context.strokeStyle = "#101316";
+    context.lineWidth = 1;
+    context.stroke();
+  }
+  context.fillStyle = "#101316";
+  context.beginPath();
+  context.arc(center, center, 12, 0, Math.PI * 2);
+  context.fill();
+  context.strokeStyle = "#dce5ec";
+  context.lineWidth = 1.5;
+  context.stroke();
+  context.fillStyle = "#ffffff";
+  context.font = "bold 17px Arial";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(cleanCheckpoint > 0 ? String(cleanCheckpoint) : "D", center, center + 0.5);
+  texture.refresh();
+  return key;
+}
+
+function drawOrientationPicker(scene, panelRect, robot, yOffset = 0) {
   const centerX = panelRect.x + panelRect.width / 2;
   const selected = orientationChoiceFor(robot);
-  scene.add.text(centerX, 30, "ORIENTATION", {
+  scene.add.text(centerX, 30 + yOffset, "ORIENTATION", {
     fontFamily: "Arial",
     fontSize: "22px",
     fontStyle: "bold",
     color: "#f2c14e"
   }).setOrigin(0.5);
 
-  const robotPreview = scene.add.image(panelRect.x + 64, 82, "robot_tiles", robotFrameIndex(robot));
+  const robotPreview = scene.add.image(panelRect.x + 64, 82 + yOffset, "robot_tiles", robotFrameIndex(robot));
   robotPreview.setDisplaySize(86, 86);
   robotPreview.rotation = rotationFromEast(selected || robot.direction);
   robotPreview.alpha = 0.72;
 
   const buttons = [
-    { direction: "west", frame: 0, fallback: "O", x: panelRect.x + 170, y: 82 },
-    { direction: "north", frame: 1, fallback: "N", x: panelRect.x + 286, y: 82 },
-    { direction: "east", frame: 2, fallback: "E", x: panelRect.x + 402, y: 82 },
-    { direction: "south", frame: 3, fallback: "S", x: panelRect.x + 518, y: 82 }
+    { direction: "west", frame: 0, fallback: "O", x: panelRect.x + 170, y: 82 + yOffset },
+    { direction: "north", frame: 1, fallback: "N", x: panelRect.x + 286, y: 82 + yOffset },
+    { direction: "east", frame: 2, fallback: "E", x: panelRect.x + 402, y: 82 + yOffset },
+    { direction: "south", frame: 3, fallback: "S", x: panelRect.x + 518, y: 82 + yOffset }
   ];
 
   for (const item of buttons) {
@@ -462,6 +523,7 @@ function playEventTimeline(scene, boardContainer, state, events, robotSprites, t
     syncRobotSpritesToState(robotSprites, state, tileSize);
     return;
   }
+  prepareSpritesForTimeline(robotSprites, events, tileSize);
   let cursor = 0;
   for (const event of events) {
     const delay = cursor;
@@ -472,11 +534,30 @@ function playEventTimeline(scene, boardContainer, state, events, robotSprites, t
   scene.time.delayedCall(cursor + 20, () => syncRobotSpritesToState(robotSprites, state, tileSize));
 }
 
+function prepareSpritesForTimeline(robotSprites, events, tileSize) {
+  const prepared = new Set();
+  for (const event of events) {
+    const sprite = robotSprites.get(event.robotId);
+    if (!sprite || prepared.has(event.robotId)) continue;
+    if (event.type === "robot_moved" && Number.isFinite(event.fromX) && Number.isFinite(event.fromY)) {
+      sprite.setPosition(event.fromX * tileSize + tileSize / 2, event.fromY * tileSize + tileSize / 2);
+      prepared.add(event.robotId);
+    } else if ((event.type === "robot_rotated" || event.type === "conveyor_rotated") && event.fromDirection) {
+      sprite.rotation = rotationFromEast(event.fromDirection);
+      prepared.add(event.robotId);
+    }
+  }
+}
+
 function playTimelineEvent(scene, boardContainer, state, event, robotSprites, tileSize, duration) {
   const sprite = robotSprites.get(event.robotId);
   if (event.type === "robot_moved" && sprite) {
+    if (Number.isFinite(event.fromX) && Number.isFinite(event.fromY)) {
+      sprite.setPosition(event.fromX * tileSize + tileSize / 2, event.fromY * tileSize + tileSize / 2);
+    }
     tweenRobot(scene, sprite, event.x, event.y, tileSize, duration);
   } else if ((event.type === "robot_rotated" || event.type === "conveyor_rotated") && sprite) {
+    if (event.fromDirection) sprite.rotation = rotationFromEast(event.fromDirection);
     tweenRobotRotation(scene, sprite, event.direction, duration);
   } else if (event.type === "robot_respawned" && sprite) {
     sprite.setPosition(event.x * tileSize + tileSize / 2, event.y * tileSize + tileSize / 2);
@@ -485,15 +566,17 @@ function playTimelineEvent(scene, boardContainer, state, event, robotSprites, ti
     flashRobot(scene, sprite);
   } else if (event.type === "robot_materialized" && sprite) {
     scene.tweens.add({ targets: sprite, alpha: 1, duration: Math.max(250, duration), ease: "Cubic.easeOut" });
-  } else if (event.type === "laser_fired" && event.hitRobotId) {
+  } else if (event.type === "laser_fired") {
     drawLaserEffect(scene, boardContainer, state, event, tileSize);
+  } else if (event.type === "robot_destroyed" && sprite) {
+    flashRobot(scene, sprite);
   }
 }
 
 function timelineEventDuration(event) {
   if (event.type === "robot_moved" || event.type === "robot_rotated" || event.type === "conveyor_rotated") return 1000;
-  if (event.type === "laser_fired") return event.hitRobotId ? 360 : 80;
-  if (event.type === "robot_damaged" || event.type === "robot_respawned" || event.type === "robot_materialized") return 320;
+  if (event.type === "laser_fired") return 360;
+  if (event.type === "robot_damaged" || event.type === "robot_destroyed" || event.type === "robot_respawned" || event.type === "robot_materialized") return 320;
   return 80;
 }
 
@@ -535,8 +618,13 @@ function syncRobotSpritesToState(robotSprites, state, tileSize) {
 
 function newEvents(previous, state) {
   if (!previous || previous.id !== state.id) return [];
-  const previousLength = previous.eventLog?.length || 0;
-  return (state.eventLog || []).slice(Math.min(previousLength, state.eventLog?.length || 0));
+  const previousSeq = lastEventSeq(previous);
+  return (state.eventLog || []).filter((event) => (event.seq || 0) > previousSeq);
+}
+
+function lastEventSeq(state) {
+  const events = state?.eventLog || [];
+  return events.reduce((max, event, index) => Math.max(max, Number(event.seq) || index + 1), 0);
 }
 
 function nearestAngle(from, to) {

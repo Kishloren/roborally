@@ -8,23 +8,7 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <main id="display-shell">
-      <section id="game-canvas">
-        <div id="display-error" class="hidden"></div>
-      </section>
-      <aside id="side-panel">
-        <a id="join-link" href="#" target="_blank" rel="noopener noreferrer" aria-label="Ouvrir l'interface joueur">
-          <img id="join-qr" alt="QR code joueur" />
-        </a>
-        <section id="map-picker">
-          <div class="panel-title">Plateaux</div>
-          <div id="map-list"></div>
-        </section>
-        <button id="start-game" type="button">Demarrer la partie</button>
-        <button id="resolve-next" type="button">Résoudre registre</button>
-        <div id="players"></div>
-      </aside>
-    </main>
+    <main id="display-stage"></main>
     <script src="../socket.io/socket.io.js"></script>
     <script type="module">
       import(`./main.js?v=${Date.now()}`);

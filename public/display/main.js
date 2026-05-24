@@ -1,12 +1,11 @@
-const qrImage = document.querySelector("#join-qr");
-const joinLink = document.querySelector("#join-link");
-const startGameButton = document.querySelector("#start-game");
-const resolveNextButton = document.querySelector("#resolve-next");
-const mapList = document.querySelector("#map-list");
-const players = document.querySelector("#players");
-const displayError = document.querySelector("#display-error");
 const basePath = detectBasePath("display");
 const socket = window.io?.({ path: `${basePath}/socket.io` });
+const DESIGN_WIDTH = 1920;
+const DESIGN_HEIGHT = 1080;
+const CARD_SOURCE = { width: 310, height: 460 };
+const BOARD_ZONE = { x: 20, y: 20, width: 1240, height: 1040 };
+const INFO_ZONE = { x: 1300, y: 20, width: 600, height: 1040 };
+const PANEL_PAD = 8;
 
 const FLOOR_FRAMES = [0, 6, 13, 14, 15, 16];
 const PIT_FRAMES = { single: 11 };
@@ -41,21 +40,27 @@ let sceneRef = null;
 let pollingTimer = null;
 let availableMaps = [];
 let resolutionAnimationLocked = false;
-
-startGameButton.addEventListener("click", startGame);
-resolveNextButton.addEventListener("click", resolveNextRegister);
+let qrPayload = null;
+let displayErrorMessage = "";
+let boardLayer = null;
+let robotLayer = null;
+let uiLayer = null;
+let boardRenderKey = "";
+let robotSprites = new Map();
+let boardMetrics = null;
+let activeResolutionStep = null;
 
 try {
   await loadPhaser();
   new Phaser.Game({
     type: Phaser.AUTO,
-    parent: "game-canvas",
-    width: 1560,
-    height: 1080,
+    parent: "display-stage",
+    width: DESIGN_WIDTH,
+    height: DESIGN_HEIGHT,
     backgroundColor: "#101316",
     scale: {
-      mode: Phaser.Scale.RESIZE,
-      autoCenter: Phaser.Scale.NO_CENTER
+      mode: Phaser.Scale.FIT,
+      autoCenter: Phaser.Scale.CENTER_BOTH
     },
     scene: {
       preload,
@@ -71,17 +76,20 @@ loadMaps();
 pollState();
 
 if (socket) {
-  socket.on("game:state", applyState);
+  socket.on("game:state", handleIncomingState);
   socket.on("connect", stopPolling);
   socket.on("connect_error", () => {
     showDisplayError("Socket.IO indisponible, bascule en polling HTTP.");
     startPolling();
   });
+  socket.on("disconnect", startPolling);
 } else {
   startPolling();
 }
 
 function preload() {
+  this.load.image("display_background", `${basePath}/shared/assets/images/fondDisplay.png`);
+  this.load.spritesheet("program_cards", `${basePath}/shared/assets/images/cartes.png`, { frameWidth: 310, frameHeight: 460 });
   this.load.spritesheet("floor_tiles", `${basePath}/shared/assets/images/sols.png`, { frameWidth: 66, frameHeight: 66 });
   this.load.spritesheet("pit_tiles", `${basePath}/shared/assets/images/pits.png`, { frameWidth: 66, frameHeight: 66 });
   this.load.spritesheet("conveyor_tiles", `${basePath}/shared/assets/images/conv.png`, { frameWidth: 66, frameHeight: 66 });
@@ -97,28 +105,34 @@ function create() {
   sceneRef = this;
   createGeneratedSprites(this);
   this.scale.on("resize", () => {
-    if (latestState) renderBoard(this, latestState);
+    renderDisplay(this, latestState, previousState);
   });
-  if (latestState) {
-    renderPlayers(latestState);
-    renderBoard(this, latestState);
-  }
+  this.input.once("pointerdown", () => requestDisplayFullscreen(this));
+  if (qrPayload) setQrTexture(qrPayload.qr);
+  renderDisplay(this, latestState, previousState);
 }
 
 function update() {}
 
 async function loadQr() {
   const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const payload = await fetchJson(`${basePath}/api/game/qr?t=${encodeURIComponent(nonce)}`, { cache: "no-store" });
-  qrImage.removeAttribute("src");
-  qrImage.src = payload.qr;
-  joinLink.href = payload.url;
+  qrPayload = await fetchJson(`${basePath}/api/game/qr?t=${encodeURIComponent(nonce)}`, { cache: "no-store" });
+  setQrTexture(qrPayload.qr);
+  renderDisplay(sceneRef, latestState, previousState);
+}
+
+function setQrTexture(dataUrl) {
+  if (!sceneRef || !dataUrl) return;
+  const key = "join_qr";
+  if (sceneRef.textures.exists(key)) sceneRef.textures.remove(key);
+  sceneRef.textures.addBase64(key, dataUrl);
+  window.setTimeout(() => renderDisplay(sceneRef, latestState, previousState), 50);
 }
 
 async function pollState() {
   try {
     const response = await fetch(`${basePath}/api/game/state`);
-    applyState(await response.json());
+    handleIncomingState(await response.json());
   } catch (error) {
     showDisplayError(`Etat indisponible: ${error.message || error}`);
   }
@@ -147,32 +161,30 @@ function stopPolling() {
 
 async function resolveNextRegister() {
   resolutionAnimationLocked = true;
-  resolveNextButton.disabled = true;
   try {
     const payload = await fetchJson(`${basePath}/api/game/resolve-next`, { method: "POST" });
     if (!payload.ok) throw new Error(payload.error || "Resolution impossible");
+    activeResolutionStep = payload.step;
     applyState(payload.state);
     window.setTimeout(() => {
+      activeResolutionStep = null;
       resolutionAnimationLocked = false;
-      updateControls(latestState);
+      drawStaticDisplay(sceneRef, latestState);
     }, timelineDurationForEvents(payload.events || []));
   } catch (error) {
     console.warn(error);
     resolutionAnimationLocked = false;
-    updateControls(latestState);
+    renderDisplay(sceneRef, latestState, previousState);
   }
 }
 
 async function startGame() {
-  startGameButton.disabled = true;
   try {
     const payload = await fetchJson(`${basePath}/api/game/start`, { method: "POST" });
     if (!payload.ok) throw new Error(payload.error || "Demarrage impossible");
     applyState(payload.state);
   } catch (error) {
     showDisplayError(`Demarrage impossible: ${error.message || error}`);
-  } finally {
-    updateControls(latestState);
   }
 }
 
@@ -190,21 +202,31 @@ function applyState(state) {
   hideDisplayError();
   previousState = latestState;
   latestState = state;
-  updateDisplayMode(state);
-  renderPlayers(state);
-  renderMapList();
-  updateControls(state);
-  if (sceneRef) renderBoard(sceneRef, state, previousState);
+  renderDisplay(sceneRef, state, previousState);
 }
 
-function updateDisplayMode(state) {
-  document.querySelector("#side-panel")?.classList.toggle("game-running", state?.phase !== "lobby");
+function handleIncomingState(state) {
+  if (isDuplicateState(state)) return;
+  applyState(state);
 }
 
-function updateControls(state) {
-  const playerCount = state?.players?.length || 0;
-  startGameButton.disabled = state?.phase !== "lobby" || playerCount === 0;
-  resolveNextButton.disabled = resolutionAnimationLocked || !["ready_to_resolve", "resolution"].includes(state?.phase);
+function isDuplicateState(state) {
+  if (!state || !latestState || state.id !== latestState.id) return false;
+  const incomingEventSeq = lastEventSeq(state);
+  const currentEventSeq = lastEventSeq(latestState);
+  return incomingEventSeq <= currentEventSeq
+    && state.phase === latestState.phase
+    && state.register === latestState.register
+    && JSON.stringify(state.resolution || null) === JSON.stringify(latestState.resolution || null)
+    && (state.players?.length || 0) === (latestState.players?.length || 0);
+}
+
+function canStartGame(state) {
+  return state?.phase === "lobby" && (state?.players?.length || 0) > 0;
+}
+
+function canResolveNext(state) {
+  return !resolutionAnimationLocked && ["ready_to_resolve", "resolution"].includes(state?.phase);
 }
 
 function timelineDurationForEvents(events) {
@@ -212,24 +234,7 @@ function timelineDurationForEvents(events) {
 }
 
 function renderMapList() {
-  if (!mapList || !availableMaps.length) return;
-  const currentId = latestState?.map?.id;
-  mapList.replaceChildren(
-    ...availableMaps.map((mapInfo) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `map-card${mapInfo.id === currentId ? " active" : ""}`;
-      button.innerHTML = `
-        <img class="map-thumb" alt="" src="${mapInfo.thumbnail || defaultMapThumbnailDataUrl(mapInfo)}" />
-        <span>
-          <span class="map-name">${escapeHtml(mapInfo.name || mapInfo.id)}</span>
-          <span class="map-meta">${mapInfo.width || "?"}x${mapInfo.height || "?"}</span>
-        </span>
-      `;
-      button.addEventListener("click", () => selectMap(mapInfo.id));
-      return button;
-    })
-  );
+  renderDisplay(sceneRef, latestState, previousState);
 }
 
 async function selectMap(mapId) {
@@ -248,36 +253,13 @@ async function selectMap(mapId) {
   }
 }
 
-function defaultMapThumbnailDataUrl(mapInfo) {
-  const width = Math.max(1, mapInfo.width || 12);
-  const height = Math.max(1, mapInfo.height || 12);
-  const cell = 8;
-  const canvas = document.createElement("canvas");
-  canvas.width = width * cell;
-  canvas.height = height * cell;
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#2f373d";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.strokeStyle = "#46515a";
-  ctx.lineWidth = 1;
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      ctx.strokeRect(x * cell + 0.5, y * cell + 0.5, cell, cell);
-    }
-  }
-
-  return canvas.toDataURL("image/png");
-}
-
 function showDisplayError(message) {
-  if (!displayError) return;
-  displayError.textContent = message;
-  displayError.classList.remove("hidden");
+  displayErrorMessage = message;
+  renderDisplay(sceneRef, latestState, previousState);
 }
 
 function hideDisplayError() {
-  displayError?.classList.add("hidden");
+  displayErrorMessage = "";
 }
 
 async function loadPhaser() {
@@ -305,28 +287,294 @@ function loadScript(src) {
   });
 }
 
-function renderPlayers(state) {
-  const robotsByPlayer = new Map((state.robots || []).map((robot) => [robot.playerId, robot]));
+async function requestDisplayFullscreen(scene) {
+  const target = scene?.game?.canvas || document.documentElement;
+  if (!document.fullscreenElement && target.requestFullscreen) {
+    try {
+      await target.requestFullscreen({ navigationUI: "hide" });
+    } catch {
+      // Les navigateurs refusent le fullscreen hors geste utilisateur. On ignore
+      // volontairement ce refus pour ne jamais bloquer l'affichage du display.
+    }
+  }
+}
+
+function renderDisplay(scene, state, previous = null) {
+  if (!scene) return;
+  ensureDisplayLayers(scene);
+  if (state) updateBoardAndRobots(scene, state, previous);
+  renderUi(scene, state);
+}
+
+function drawStaticDisplay(scene, state) {
+  if (!scene) return;
+  ensureDisplayLayers(scene);
+  if (state) syncRobotSpritesToState(robotSprites, state, boardMetrics?.tileSize || 0, boardMetrics?.offsetX || 0, boardMetrics?.offsetY || 0);
+  renderUi(scene, state);
+}
+
+function ensureDisplayLayers(scene) {
+  if (boardLayer && robotLayer && uiLayer) return;
+  scene.add.image(0, 0, "display_background").setOrigin(0).setDisplaySize(DESIGN_WIDTH, DESIGN_HEIGHT);
+  boardLayer = scene.add.container(0, 0);
+  robotLayer = scene.add.container(0, 0);
+  uiLayer = scene.add.container(0, 0);
+}
+
+function renderUi(scene, state) {
+  uiLayer.removeAll(true);
+  drawSidePanel(scene, state);
+  if (displayErrorMessage) drawDisplayError(scene, displayErrorMessage);
+}
+
+function updateBoardAndRobots(scene, state, previous) {
+  const metrics = calculateBoardMetrics(scene, state);
+  const nextKey = `${state.id}:${state.map.id}:${state.map.width}:${state.map.height}:${metrics.tileSize}:${metrics.offsetX}:${metrics.offsetY}`;
+  if (nextKey !== boardRenderKey) {
+    boardLayer.removeAll(true);
+    robotLayer.removeAll(true);
+    robotSprites.clear();
+    drawBoardStatic(scene, state, metrics);
+    createRobotSprites(scene, state, previous, metrics);
+    boardRenderKey = nextKey;
+  } else {
+    ensureRobotSprites(scene, state, previous, metrics);
+  }
+  boardMetrics = metrics;
+  const events = newEvents(previous, state);
+  playEventTimeline(scene, state, events, robotSprites, metrics.tileSize, metrics.offsetX, metrics.offsetY);
+}
+
+function drawSidePanel(scene, state) {
+  const panel = panelRect(scene);
+  if (state?.phase === "lobby") drawLobbyPanel(scene, panel, state);
+  else drawGamePanel(scene, panel, state);
+}
+
+function panelRect() {
+  return { ...INFO_ZONE };
+}
+
+function drawLobbyPanel(scene, panel, state) {
+  const x = panel.x + PANEL_PAD;
+  const qrSize = Math.min(312, panel.width - PANEL_PAD * 2);
+  if (scene.textures.exists("join_qr")) {
+    const qr = scene.add.image(x, PANEL_PAD, "join_qr").setOrigin(0).setDisplaySize(qrSize, qrSize);
+    uiLayer.add(qr);
+    qr.setInteractive({ useHandCursor: true });
+    qr.on("pointerdown", () => {
+      if (qrPayload?.url) window.open(qrPayload.url, "_blank", "noopener,noreferrer");
+    });
+  } else {
+    uiLayer.add(scene.add.rectangle(x, PANEL_PAD, qrSize, qrSize, 0xffffff).setOrigin(0));
+  }
+  drawPanelTitle(scene, x, qrSize + 24, "PLATEAUX");
+  const listY = qrSize + 44;
+  availableMaps.slice(0, 6).forEach((mapInfo, index) => {
+    drawMapButton(scene, x, listY + index * 72, panel.width - PANEL_PAD * 2, mapInfo, mapInfo.id === state?.map?.id);
+  });
+  drawActionButton(scene, x, panel.height - 52, panel.width - PANEL_PAD * 2, 42, "DEMARRER LA PARTIE", canStartGame(state), startGame);
+}
+
+function drawMapButton(scene, x, y, width, mapInfo, active) {
+  const button = scene.add.rectangle(x, y, width, 64, active ? 0x2a2619 : 0x171c20).setOrigin(0);
+  uiLayer.add(button);
+  button.setStrokeStyle(1, active ? 0xf2c14e : 0x39434c);
+  button.setInteractive({ useHandCursor: true });
+  button.on("pointerdown", () => selectMap(mapInfo.id));
+  uiLayer.add(scene.add.rectangle(x + 8, y + 8, 64, 48, 0x101316).setOrigin(0).setStrokeStyle(1, 0x303941));
+  uiLayer.add(scene.add.text(x + 84, y + 12, mapInfo.name || mapInfo.id, {
+    fontFamily: "Arial",
+    fontSize: "16px",
+    fontStyle: "bold",
+    color: "#dce5ec"
+  }).setOrigin(0));
+  uiLayer.add(scene.add.text(x + 84, y + 36, `${mapInfo.width || "?"}x${mapInfo.height || "?"}`, {
+    fontFamily: "Arial",
+    fontSize: "12px",
+    color: "#8f9ba5"
+  }).setOrigin(0));
+}
+
+function drawGamePanel(scene, panel, state) {
+  const x = panel.x + PANEL_PAD;
+  const readyPlayers = (state?.players || []).filter((player) => player.programSubmitted).length;
+  const totalPlayers = state?.players?.length || 0;
+  const resolveReady = canResolveNext(state);
+  drawActionButton(scene, x, panel.y + PANEL_PAD, panel.width - PANEL_PAD * 2, 42, resolveReady ? "ACTION SUIVANTE" : "EN ATTENTE", resolveReady, resolveNextRegister);
+  const statusLabel = resolveReady
+    ? "PROGRAMMES PRETS"
+    : `${readyPlayers}/${totalPlayers} PROGRAMMES`;
+  uiLayer.add(scene.add.text(x, panel.y + PANEL_PAD + 48, statusLabel, {
+    fontFamily: "Arial",
+    fontSize: "14px",
+    fontStyle: "bold",
+    color: resolveReady ? "#34dcb6" : "#8f9ba5"
+  }).setOrigin(0));
+  const robotsByPlayer = new Map((state?.robots || []).map((robot) => [robot.playerId, robot]));
   const showProgram = shouldShowProgram(state);
-  players.replaceChildren(
-    ...state.players.map((player) => {
-      const robot = robotsByPlayer.get(player.id);
-      const health = healthValue(robot);
-      const checkpoint = checkpointValue(robot);
-      const row = document.createElement("div");
-      row.className = "player-row";
-      row.innerHTML = `
-        <div class="robot-icon" aria-hidden="true">
-          <span class="robot-icon-sprite" style="${robotSpriteStyle(player.robotId, robot?.direction)}"></span>
-        </div>
-        <div class="player-health-disk">${healthDiskMarkup(9, health, checkpoint)}</div>
-        <div class="player-summary">
-          ${showProgram ? `<div class="player-program" style="${programColumnStyle(state.register)}">${programCards(player.programCards, state.register)}</div>` : ""}
-        </div>
-      `;
-      return row;
-    })
+  const players = state?.players || [];
+  const rowGap = 8;
+  const availableRowHeight = Math.floor((panel.height - 88 - Math.max(0, players.length - 1) * rowGap) / Math.max(1, players.length || 1));
+  const rowHeight = Math.max(86, Math.min(118, availableRowHeight));
+  players.forEach((player, index) => {
+    const y = panel.y + 88 + index * (rowHeight + rowGap);
+    const robot = robotsByPlayer.get(player.id);
+    drawPlayerRow(scene, x, y, panel.width - PANEL_PAD * 2, rowHeight, player, robot, showProgram, state.register || 0, state);
+  });
+}
+
+function drawActionButton(scene, x, y, width, height, label, enabled, action) {
+  const button = scene.add.rectangle(x, y, width, height, enabled ? 0x171c20 : 0x111518).setOrigin(0);
+  uiLayer.add(button);
+  button.setStrokeStyle(1, enabled ? 0xf2c14e : 0x4a4f54);
+  uiLayer.add(scene.add.text(x + width / 2, y + height / 2, label, {
+    fontFamily: "Arial",
+    fontSize: "15px",
+    fontStyle: "bold",
+    color: enabled ? "#f2c14e" : "#727b83"
+  }).setOrigin(0.5));
+  if (enabled) {
+    button.setInteractive({ useHandCursor: true });
+    button.on("pointerdown", action);
+  }
+}
+
+function drawPlayerRow(scene, x, y, width, rowHeight, player, robot, showProgram, register, state) {
+  uiLayer.add(scene.add.rectangle(x, y, width, rowHeight, 0x171c20, 0.52).setOrigin(0).setStrokeStyle(1, 0x39434c, 0.7));
+  const centerY = y + rowHeight / 2;
+  const robotSize = Math.min(74, rowHeight - 12);
+  const frame = robotFrame(player.robotId);
+  const icon = scene.add.image(x + 38, centerY, "robot_tiles", frame).setDisplaySize(robotSize, robotSize);
+  uiLayer.add(icon);
+  icon.rotation = directionAngle(robot?.direction || "east");
+  const disk = createHealthDisk(9, healthValue(robot), checkpointValue(robot));
+  if (disk) uiLayer.add(scene.add.image(x + 92, centerY, disk).setDisplaySize(Math.min(44, rowHeight - 26), Math.min(44, rowHeight - 26)));
+  if (showProgram) drawProgram(scene, x + 136, y + 6, width - 146, rowHeight - 12, player.programCards || [], register);
+  else if (state?.phase === "programming" && player.programSubmitted) {
+    drawWaitingForPlayers(scene, x + 136, y, width - 146, rowHeight);
+  }
+  if (robot?.eliminated) drawEliminatedOverlay(scene, x, y, width, rowHeight);
+}
+
+function drawWaitingForPlayers(scene, x, y, width, height) {
+  const box = scene.add.rectangle(x, y + 8, width, height - 16, 0x0f2b28, 0.82).setOrigin(0);
+  uiLayer.add(box);
+  box.setStrokeStyle(1, 0x34dcb6, 0.65);
+  uiLayer.add(scene.add.text(x + width / 2, y + height / 2, "EN ATTENTE DES AUTRES JOUEURS", {
+    fontFamily: "Arial",
+    fontSize: "15px",
+    fontStyle: "bold",
+    color: "#d8fff7"
+  }).setOrigin(0.5));
+}
+
+function drawEliminatedOverlay(scene, x, y, width, height) {
+  const overlay = scene.add.rectangle(x, y, width, height, 0x2b0707, 0.58).setOrigin(0);
+  uiLayer.add(overlay);
+  const slashA = scene.add.line(0, 0, x + 6, y + height - 8, x + width - 6, y + 8, 0xff2020, 0.95).setOrigin(0);
+  slashA.setLineWidth(5);
+  uiLayer.add(slashA);
+  const slashB = scene.add.line(0, 0, x + 6, y + 8, x + width - 6, y + height - 8, 0xff2020, 0.65).setOrigin(0);
+  slashB.setLineWidth(3);
+  uiLayer.add(slashB);
+  uiLayer.add(scene.add.text(x + width - 12, y + height / 2, "ELIMINE", {
+    fontFamily: "Arial",
+    fontSize: "16px",
+    fontStyle: "bold",
+    color: "#ffdddd"
+  }).setOrigin(1, 0.5));
+}
+
+function drawProgram(scene, x, y, width, height, cards, register) {
+  const gap = 6;
+  const cardHeight = Math.max(44, height);
+  const widthFromHeight = Math.floor(cardHeight * CARD_SOURCE.width / CARD_SOURCE.height);
+  const maxWidth = Math.floor((width - gap * 4) / 5);
+  const cardWidth = Math.max(30, Math.min(widthFromHeight, maxWidth));
+  const startX = x + Math.max(0, width - (cardWidth * 5 + gap * 4));
+  uiLayer.add(scene.add.rectangle(startX + Math.max(0, Math.min(4, register)) * (cardWidth + gap), y - 6, cardWidth, cardHeight + 12, 0x34dcb6, 0.78).setOrigin(0));
+  const highlight = latestState?.resolution?.stage === "cards" || activeResolutionStep?.stage === "robot_card";
+  cards.forEach((card, index) => {
+    const cx = startX + index * (cardWidth + gap);
+    const state = cardDisplayState(card, index, register);
+    if (!card) {
+      uiLayer.add(scene.add.rectangle(cx, y, cardWidth, cardHeight, 0x11171b, 0.75).setOrigin(0).setStrokeStyle(1, state === "active" || state === "next" ? 0xfff27a : 0x3f4a52));
+      return;
+    }
+    const image = scene.add.image(cx, y, "program_cards", cardFrameIndex(card)).setOrigin(0).setDisplaySize(cardWidth, cardHeight);
+    image.alpha = state === "spent" ? 0.35 : 1;
+    uiLayer.add(image);
+    const active = state === "active" || state === "next";
+    const strokeColor = state === "active" ? 0xffffff : state === "next" ? 0xfff27a : state === "spent" ? 0x3f4a52 : 0xf2c14e;
+    const frame = scene.add.rectangle(cx, y, cardWidth, cardHeight, 0x000000, 0).setOrigin(0).setStrokeStyle(active ? 3 : 1, strokeColor);
+    uiLayer.add(frame);
+    const priority = scene.add.text(cx + cardWidth * 0.5, y + cardHeight * ((15 + 32.5) / 460), String(card.priority), {
+      fontFamily: "Arial",
+      fontSize: `${Math.max(10, Math.floor(cardWidth * 0.16))}px`,
+      fontStyle: "bold",
+      color: "#ffffff"
+    }).setOrigin(0.5);
+    priority.alpha = state === "spent" ? 0.35 : 1;
+    uiLayer.add(priority);
+    if (state === "next" && highlight) {
+      image.setTint(0xffffcc);
+      scene.tweens.add({ targets: image, alpha: 0.86, yoyo: true, repeat: -1, duration: 520 });
+    }
+    if (state === "active") {
+      scene.tweens.add({ targets: [image, priority], alpha: 0.25, yoyo: true, repeat: -1, duration: 110 });
+    }
+  });
+}
+
+function cardDisplayState(card, index, register) {
+  if (!card || index !== register) return "normal";
+  if (activeResolutionStep?.stage === "robot_card" && activeResolutionStep.events?.some((event) => event.type === "card_activated" && event.cardId === card.id)) {
+    return "active";
+  }
+  if (isResolvedCard(card, register)) return "spent";
+  if (isNextCard(card, register)) return "next";
+  return "normal";
+}
+
+function isResolvedCard(card, register) {
+  return (latestState?.eventLog || []).some((event) => event.type === "card_resolved" && event.cardId === card.id && event.register === register);
+}
+
+function isNextCard(card, register) {
+  const resolution = latestState?.resolution || (
+    latestState?.phase === "ready_to_resolve" ? { register: latestState.register || 0, stage: "cards", cardIndex: 0 } : null
   );
+  if (!resolution || resolution.stage !== "cards" || resolution.register !== register) return false;
+  const ordered = programmedActionsForRegister(latestState, register);
+  return ordered[resolution.cardIndex]?.card.id === card.id;
+}
+
+function programmedActionsForRegister(state, register) {
+  return (state?.players || [])
+    .map((player) => ({ player, card: player.programCards?.[register] }))
+    .filter((action) => action.card)
+    .sort((a, b) => b.card.priority - a.card.priority);
+}
+
+function drawPanelTitle(scene, x, y, label) {
+  uiLayer.add(scene.add.text(x, y, label, {
+    fontFamily: "Arial",
+    fontSize: "12px",
+    fontStyle: "bold",
+    color: "#8f9ba5"
+  }).setOrigin(0));
+}
+
+function drawDisplayError(scene, message) {
+  const box = scene.add.rectangle(24, 24, 640, 54, 0x2a1117).setOrigin(0).setStrokeStyle(1, 0xff5c6c);
+  uiLayer.add(box);
+  uiLayer.add(scene.add.text(box.x + 14, box.y + 12, message, {
+    fontFamily: "Arial",
+    fontSize: "16px",
+    color: "#ffd7dc",
+    wordWrap: { width: 610 }
+  }).setOrigin(0));
 }
 
 function shouldShowProgram(state) {
@@ -335,15 +583,8 @@ function shouldShowProgram(state) {
     && state.players.every((player) => player.programSubmitted);
 }
 
-function robotSpriteStyle(robotId, direction = "east") {
-  const frame = Math.max(0, Math.min(7, Number(String(robotId || "").replace("robot_", "")) - 1 || 0));
-  const position = frame === 0 ? 0 : frame * 100 / 7;
-  return [
-    `background-image:url('${basePath}/shared/assets/images/robots.png')`,
-    "background-size:800% 100%",
-    `background-position:${position}% 0`,
-    `transform:rotate(${directionAngle(direction)}rad)`
-  ].join(";");
+function robotFrame(robotId) {
+  return Math.max(0, Math.min(7, Number(String(robotId || "").replace("robot_", "")) - 1 || 0));
 }
 
 function healthValue(robot) {
@@ -352,15 +593,6 @@ function healthValue(robot) {
 
 function checkpointValue(robot) {
   return Number(robot?.checkpoint) || 0;
-}
-
-function healthDiskMarkup(max, current, checkpoint) {
-  const textureKey = createHealthDisk(max, current, checkpoint);
-  if (!textureKey || !sceneRef?.textures.exists(textureKey)) {
-    return "";
-  }
-  const src = sceneRef.textures.getBase64(textureKey);
-  return `<img class="health-disk" alt="${current}/${max} PV" src="${src}" />`;
 }
 
 function createHealthDisk(max, current, checkpoint = 0) {
@@ -424,21 +656,6 @@ function createHealthDisk(max, current, checkpoint = 0) {
   return textureKey;
 }
 
-function programCards(cards = [], currentRegister = 0) {
-  return cards.map((card, index) => card
-    ? `<span class="mini-card${index === currentRegister ? " current" : ""}"><span>${card.priority}</span><strong>${cardSymbol(card)}</strong></span>`
-    : `<span class="mini-card empty${index === currentRegister ? " current" : ""}"></span>`
-  ).join("");
-}
-
-function programColumnStyle(currentRegister = 0) {
-  const index = Math.max(0, Math.min(4, Number(currentRegister) || 0));
-  const cardWidth = 40;
-  const gap = 4;
-  const x = index * (cardWidth + gap);
-  return `--current-register-x:${x}px;--current-register-width:${cardWidth}px;`;
-}
-
 function cardSymbol(card) {
   if (card.type === "move_1" || card.type === "move_2" || card.type === "move_3") return `↑${card.distance || 1}`;
   if (card.type === "backup") return "↓";
@@ -448,62 +665,127 @@ function cardSymbol(card) {
   return "?";
 }
 
+function cardFrameIndex(card) {
+  const frames = {
+    move_3: 0,
+    move_2: 1,
+    move_1: 2,
+    rotate_left: 3,
+    rotate_right: 4,
+    backup: 5,
+    u_turn: 6
+  };
+  return frames[card.type] ?? 0;
+}
+
 function renderBoard(scene, state, previous = null) {
-  scene.tweens.killAll();
-  scene.time.removeAllEvents();
-  scene.children.removeAll();
   if (!state?.map) {
     showDisplayError("Etat de partie invalide: carte absente.");
     return;
   }
-  const width = scene.scale.width || 1560;
-  const height = scene.scale.height || 1080;
+  const metrics = calculateBoardMetrics(scene, state);
+  drawBoardStatic(scene, state, metrics);
+  createRobotSprites(scene, state, previous, metrics);
+  playEventTimeline(scene, state, newEvents(previous, state), robotSprites, metrics.tileSize, metrics.offsetX, metrics.offsetY);
+}
+
+function calculateBoardMetrics(scene, state) {
+  const width = BOARD_ZONE.width;
+  const height = BOARD_ZONE.height;
   const tileSize = Math.max(24, Math.floor(Math.min(width / state.map.width, height / state.map.height)));
-  const offsetX = Math.floor((width - state.map.width * tileSize) / 2);
-  const offsetY = Math.floor((height - state.map.height * tileSize) / 2);
+  return {
+    width,
+    height,
+    tileSize,
+    offsetX: BOARD_ZONE.x + Math.floor((width - state.map.width * tileSize) / 2),
+    offsetY: BOARD_ZONE.y + Math.floor((height - state.map.height * tileSize) / 2)
+  };
+}
+
+function drawBoardStatic(scene, state, metrics) {
   const specialTiles = new Map(state.map.tiles.map((tile) => [`${tile.x},${tile.y}`, tile]));
-  const previousRobots = new Map((previous?.robots || []).map((robot) => [robot.id, robot]));
-  const changedEvents = newEvents(previous, state);
-  const robotSprites = new Map();
 
   for (let y = 0; y < state.map.height; y += 1) {
     for (let x = 0; x < state.map.width; x += 1) {
       const tile = specialTiles.get(`${x},${y}`) || { x, y, floor: "normal" };
-      const px = offsetX + x * tileSize;
-      const py = offsetY + y * tileSize;
-      drawBoardTile(scene, tile, px, py, tileSize);
+      const px = metrics.offsetX + x * metrics.tileSize;
+      const py = metrics.offsetY + y * metrics.tileSize;
+      drawBoardTile(scene, tile, px, py, metrics.tileSize);
     }
   }
+}
 
+function createRobotSprites(scene, state, previous, metrics) {
+  const previousRobots = new Map((previous?.robots || []).map((robot) => [robot.id, robot]));
   for (const robot of state.robots) {
     const basis = previousRobots.get(robot.id) || robot;
     const frame = Math.max(0, Math.min(7, Number(String(robot.id || "").replace("robot_", "")) - 1 || 0));
     const key = scene.textures.exists("robot_tiles") ? "robot_tiles" : "robot_idle";
     const sprite = scene.add.image(
-      offsetX + basis.x * tileSize + tileSize / 2,
-      offsetY + basis.y * tileSize + tileSize / 2,
+      metrics.offsetX + basis.x * metrics.tileSize + metrics.tileSize / 2,
+      metrics.offsetY + basis.y * metrics.tileSize + metrics.tileSize / 2,
       key,
       key === "robot_tiles" ? frame : undefined
-    ).setDisplaySize(tileSize * 0.82, tileSize * 0.82);
+    ).setDisplaySize(metrics.tileSize * 0.82, metrics.tileSize * 0.82);
     sprite.alpha = basis.holographic ? 0.55 : 1;
     sprite.rotation = directionAngle(basis.direction);
+    if (basis.eliminated) {
+      sprite.setTint(0xff3030);
+      sprite.alpha = 0.25;
+    }
     robotSprites.set(robot.id, sprite);
+    robotLayer.add(sprite);
   }
-  playEventTimeline(scene, state, changedEvents, robotSprites, tileSize, offsetX, offsetY);
+}
+
+function ensureRobotSprites(scene, state, previous, metrics) {
+  const animatedIds = new Set(newEvents(previous, state)
+    .filter((event) => event.robotId && ["robot_moved", "robot_rotated", "conveyor_rotated", "robot_respawned"].includes(event.type))
+    .map((event) => event.robotId));
+  const currentIds = new Set(state.robots.map((robot) => robot.id));
+  for (const [robotId, sprite] of robotSprites.entries()) {
+    if (!currentIds.has(robotId)) {
+      sprite.destroy();
+      robotSprites.delete(robotId);
+    }
+  }
+  const missing = state.robots.filter((robot) => !robotSprites.has(robot.id));
+  if (missing.length) createRobotSprites(scene, { ...state, robots: missing }, previous, metrics);
+  for (const robot of state.robots) {
+    const sprite = robotSprites.get(robot.id);
+    if (!sprite) continue;
+    sprite.setDisplaySize(metrics.tileSize * 0.82, metrics.tileSize * 0.82);
+    if (!animatedIds.has(robot.id)) {
+      sprite.setPosition(metrics.offsetX + robot.x * metrics.tileSize + metrics.tileSize / 2, metrics.offsetY + robot.y * metrics.tileSize + metrics.tileSize / 2);
+      sprite.rotation = directionAngle(robot.direction);
+      sprite.alpha = robot.holographic ? 0.55 : 1;
+      if (robot.eliminated) {
+        sprite.setTint(0xff3030);
+        sprite.alpha = 0.25;
+      } else {
+        sprite.clearTint();
+      }
+    }
+  }
 }
 
 function drawLaserEffect(scene, state, event, tileSize, offsetX, offsetY) {
   const robots = new Map(state.robots.map((robot) => [robot.id, robot]));
   const start = laserStartPoint(event, robots, tileSize, offsetX, offsetY);
   const hitRobot = robots.get(event.hitRobotId);
-  if (!start || !hitRobot) return;
-  const end = cellCenter(hitRobot.x, hitRobot.y, tileSize, offsetX, offsetY);
+  const end = hitRobot
+    ? cellCenter(hitRobot.x, hitRobot.y, tileSize, offsetX, offsetY)
+    : Number.isFinite(event.endX) && Number.isFinite(event.endY)
+      ? cellCenter(event.endX, event.endY, tileSize, offsetX, offsetY)
+      : null;
+  if (!start || !end || (start.x === end.x && start.y === end.y)) return;
   const beam = scene.add.graphics();
-  beam.lineStyle(Math.max(5, (event.power || 1) * 4), 0xfff27a, 0.95);
+  beam.lineStyle(Math.max(5, (event.power || 1) * 4), 0xff2020, 0.95);
   beam.beginPath();
   beam.moveTo(start.x, start.y);
   beam.lineTo(end.x, end.y);
   beam.strokePath();
+  robotLayer.add(beam);
   scene.tweens.add({
     targets: beam,
     alpha: 0,
@@ -514,6 +796,9 @@ function drawLaserEffect(scene, state, event, tileSize, offsetX, offsetY) {
 }
 
 function laserStartPoint(event, robots, tileSize, offsetX, offsetY) {
+  if (Number.isFinite(event.sourceX) && Number.isFinite(event.sourceY)) {
+    return cellCenter(event.sourceX, event.sourceY, tileSize, offsetX, offsetY);
+  }
   if (event.source === "board_laser") {
     const [x, y] = String(event.sourceId || "").split(",").map(Number);
     if (Number.isFinite(x) && Number.isFinite(y)) return cellCenter(x, y, tileSize, offsetX, offsetY);
@@ -531,6 +816,7 @@ function playEventTimeline(scene, state, events, robotSprites, tileSize, offsetX
     syncRobotSpritesToState(robotSprites, state, tileSize, offsetX, offsetY);
     return;
   }
+  prepareSpritesForTimeline(robotSprites, events, tileSize, offsetX, offsetY);
   let cursor = 0;
   for (const event of events) {
     const delay = cursor;
@@ -541,11 +827,30 @@ function playEventTimeline(scene, state, events, robotSprites, tileSize, offsetX
   scene.time.delayedCall(cursor + 20, () => syncRobotSpritesToState(robotSprites, state, tileSize, offsetX, offsetY));
 }
 
+function prepareSpritesForTimeline(robotSprites, events, tileSize, offsetX, offsetY) {
+  const prepared = new Set();
+  for (const event of events) {
+    const sprite = robotSprites.get(event.robotId);
+    if (!sprite || prepared.has(event.robotId)) continue;
+    if (event.type === "robot_moved" && Number.isFinite(event.fromX) && Number.isFinite(event.fromY)) {
+      sprite.setPosition(offsetX + event.fromX * tileSize + tileSize / 2, offsetY + event.fromY * tileSize + tileSize / 2);
+      prepared.add(event.robotId);
+    } else if ((event.type === "robot_rotated" || event.type === "conveyor_rotated") && event.fromDirection) {
+      sprite.rotation = directionAngle(event.fromDirection);
+      prepared.add(event.robotId);
+    }
+  }
+}
+
 function playTimelineEvent(scene, state, event, robotSprites, tileSize, offsetX, offsetY, duration) {
   const sprite = robotSprites.get(event.robotId);
   if (event.type === "robot_moved" && sprite) {
+    if (Number.isFinite(event.fromX) && Number.isFinite(event.fromY)) {
+      sprite.setPosition(offsetX + event.fromX * tileSize + tileSize / 2, offsetY + event.fromY * tileSize + tileSize / 2);
+    }
     tweenRobot(scene, sprite, event.x, event.y, tileSize, offsetX, offsetY, duration);
   } else if ((event.type === "robot_rotated" || event.type === "conveyor_rotated") && sprite) {
+    if (event.fromDirection) sprite.rotation = directionAngle(event.fromDirection);
     tweenRobotRotation(scene, sprite, event.direction, duration);
   } else if (event.type === "robot_respawned" && sprite) {
     sprite.setPosition(offsetX + event.x * tileSize + tileSize / 2, offsetY + event.y * tileSize + tileSize / 2);
@@ -554,15 +859,17 @@ function playTimelineEvent(scene, state, event, robotSprites, tileSize, offsetX,
     flashRobot(scene, sprite);
   } else if (event.type === "robot_materialized" && sprite) {
     scene.tweens.add({ targets: sprite, alpha: 1, duration: Math.max(250, duration), ease: "Cubic.easeOut" });
-  } else if (event.type === "laser_fired" && event.hitRobotId) {
+  } else if (event.type === "laser_fired") {
     drawLaserEffect(scene, state, event, tileSize, offsetX, offsetY);
+  } else if (event.type === "robot_destroyed" && sprite) {
+    flashRobot(scene, sprite);
   }
 }
 
 function timelineEventDuration(event) {
   if (event.type === "robot_moved" || event.type === "robot_rotated" || event.type === "conveyor_rotated") return 1000;
-  if (event.type === "laser_fired") return event.hitRobotId ? 360 : 80;
-  if (event.type === "robot_damaged" || event.type === "robot_respawned" || event.type === "robot_materialized") return 320;
+  if (event.type === "laser_fired") return 360;
+  if (event.type === "robot_damaged" || event.type === "robot_destroyed" || event.type === "robot_respawned" || event.type === "robot_materialized") return 320;
   return 80;
 }
 
@@ -597,10 +904,17 @@ function syncRobotSpritesToState(robotSprites, state, tileSize, offsetX, offsetY
     sprite.setPosition(offsetX + robot.x * tileSize + tileSize / 2, offsetY + robot.y * tileSize + tileSize / 2);
     sprite.rotation = directionAngle(robot.direction);
     sprite.alpha = robot.holographic ? 0.55 : 1;
+    if (robot.eliminated) {
+      sprite.setTint(0xff3030);
+      sprite.alpha = 0.25;
+    } else {
+      sprite.clearTint();
+    }
   }
 }
 
 function drawBoardTile(scene, tile, px, py, tileSize) {
+  const before = scene.children.length;
   if (tile.floor === "pit") {
     addPitTile(scene, tile, px, py, tileSize);
   } else {
@@ -612,6 +926,14 @@ function drawBoardTile(scene, tile, px, py, tileSize) {
     if (tile.crusher) addCrusherTile(scene, tile.crusher, px, py, tileSize);
     if (tile.pusher) addGeneratedOriented(scene, "pusher", tile.pusher.direction, px, py, tileSize);
     if (tile.walls) addWallTiles(scene, tile.walls, px, py, tileSize);
+  }
+  moveNewChildrenToLayer(scene, before, boardLayer);
+}
+
+function moveNewChildrenToLayer(scene, fromIndex, layer) {
+  const created = scene.children.list.slice(fromIndex);
+  for (const child of created) {
+    layer.add(child);
   }
 }
 
@@ -756,8 +1078,13 @@ function crusherSegmentMarkers(activeRegisters = []) {
 
 function newEvents(previous, state) {
   if (!previous || previous.id !== state.id) return [];
-  const previousLength = previous.eventLog?.length || 0;
-  return (state.eventLog || []).slice(Math.min(previousLength, state.eventLog?.length || 0));
+  const previousSeq = lastEventSeq(previous);
+  return (state.eventLog || []).filter((event) => (event.seq || 0) > previousSeq);
+}
+
+function lastEventSeq(state) {
+  const events = state?.eventLog || [];
+  return events.reduce((max, event, index) => Math.max(max, Number(event.seq) || index + 1), 0);
 }
 
 function nearestAngle(from, to) {
@@ -831,14 +1158,4 @@ function makeRobot(scene, key, width, height) {
 
   graphics.generateTexture(key, width, height);
   graphics.destroy();
-}
-
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#039;"
-  }[char]));
 }

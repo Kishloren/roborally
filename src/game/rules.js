@@ -40,7 +40,7 @@ export function resolveSegment(game, registerIndex = game.register || 0) {
     finishTurn(game, events);
   }
   resetSegmentDestroyedRobots(game);
-  game.eventLog.push(...events);
+  appendEvents(game, events);
   game.updatedAt = new Date().toISOString();
   return events;
 }
@@ -128,7 +128,7 @@ function completeRegisterStep(game, events, resolution) {
 }
 
 function appendResolutionEvents(game, events) {
-  game.eventLog.push(...events);
+  appendEvents(game, events);
   game.updatedAt = new Date().toISOString();
 }
 
@@ -146,8 +146,9 @@ function programmedCards(game, registerIndex) {
 
 function executeCard(game, robot, card, events) {
   if (card.action === "rotate") {
+    const fromDirection = robot.direction;
     robot.direction = rotateDirection(robot.direction, card.turn);
-    events.push({ type: "robot_rotated", robotId: robot.id, cardId: card.id, direction: robot.direction });
+    events.push({ type: "robot_rotated", robotId: robot.id, cardId: card.id, fromDirection, direction: robot.direction });
     return;
   }
   if (card.action === "move") {
@@ -215,8 +216,9 @@ function moveRobot(game, robot, direction, source, events, options = {}) {
 
   robot.x = target.x;
   robot.y = target.y;
-  events.push({ type: "robot_moved", robotId: robot.id, source, x: robot.x, y: robot.y });
+  events.push({ type: "robot_moved", robotId: robot.id, source, fromX: target.x - directionToVector(direction).x, fromY: target.y - directionToVector(direction).y, x: robot.x, y: robot.y });
   if (isPit(game.map, robot.x, robot.y)) destroyRobot(game, robot, "pit", events);
+  else resolveCheckpoint(game, robot, events);
   return true;
 }
 
@@ -236,7 +238,7 @@ function applyConveyorArrivalRotation(game, robot, sourceConveyor, moveDirection
   }
   if (!turn) return;
   robot.direction = rotateDirection(robot.direction, turn);
-  events.push({ type: "conveyor_rotated", robotId: robot.id, turn, direction: robot.direction });
+  events.push({ type: "conveyor_rotated", robotId: robot.id, turn, fromDirection: rotateDirection(robot.direction, -turn), direction: robot.direction });
 }
 
 function finishTurn(game, events) {
@@ -267,15 +269,20 @@ function finishTurn(game, events) {
 function resolveCheckpointAndRepair(game, robot, events) {
   const tile = tileAt(game.map, robot.x, robot.y);
   if (!tile) return;
-  if (tile.checkpoint === robot.checkpoint + 1) {
-    robot.checkpoint = tile.checkpoint;
-    events.push({ type: "checkpoint_reached", robotId: robot.id, checkpoint: robot.checkpoint });
-  }
+  resolveCheckpoint(game, robot, events);
   const repair = tile.repair || 0;
   if (repair > 0 && robot.damage > 0) {
     const before = robot.damage;
     robot.damage = Math.max(0, robot.damage - repair);
     events.push({ type: "robot_repaired", robotId: robot.id, amount: before - robot.damage });
+  }
+}
+
+function resolveCheckpoint(game, robot, events) {
+  const tile = tileAt(game.map, robot.x, robot.y);
+  if (tile?.checkpoint === robot.checkpoint + 1) {
+    robot.checkpoint = tile.checkpoint;
+    events.push({ type: "checkpoint_reached", robotId: robot.id, checkpoint: robot.checkpoint });
   }
 }
 
@@ -285,14 +292,19 @@ function resolveLasers(game, events) {
     ...robotLaserShots(game)
   ];
   for (const shot of shots) {
-    const hit = firstLaserHit(game, shot.x, shot.y, shot.direction);
+    const trace = traceLaser(game, shot.x, shot.y, shot.direction);
+    const hit = trace.hit;
     events.push({
       type: "laser_fired",
       source: shot.source,
       sourceId: shot.sourceId,
+      sourceX: shot.x,
+      sourceY: shot.y,
       direction: shot.direction,
       power: shot.power,
-      hitRobotId: hit?.robot.id || null
+      hitRobotId: hit?.robot.id || null,
+      endX: trace.endX,
+      endY: trace.endY
     });
     if (hit) damageRobot(game, hit.robot, shot.power, shot.source, events);
   }
@@ -324,15 +336,17 @@ function robotLaserShots(game) {
     }));
 }
 
-function firstLaserHit(game, x, y, direction) {
+function traceLaser(game, x, y, direction) {
   let current = { x, y };
+  let end = { x, y };
   while (canEnterCell(game, current.x, current.y, direction)) {
     current = nextCell(current.x, current.y, direction);
-    if (!isInsideMap(game.map, current.x, current.y)) return null;
+    if (!isInsideMap(game.map, current.x, current.y)) return { hit: null, endX: end.x, endY: end.y };
+    end = current;
     const robot = physicalRobotAt(game, current.x, current.y);
-    if (robot) return { robot, x: current.x, y: current.y };
+    if (robot) return { hit: { robot, x: current.x, y: current.y }, endX: current.x, endY: current.y };
   }
-  return null;
+  return { hit: null, endX: end.x, endY: end.y };
 }
 
 function damageRobot(game, robot, amount, source, events) {
@@ -508,6 +522,13 @@ function oppositeDirection(direction) {
 
 function cellKey(x, y) {
   return `${x},${y}`;
+}
+
+function appendEvents(game, events) {
+  for (const event of events) {
+    game.nextEventSeq = Math.max(game.nextEventSeq || 0, game.eventLog.length || 0) + 1;
+    game.eventLog.push({ ...event, seq: game.nextEventSeq });
+  }
 }
 
 function shuffle(items, seed) {

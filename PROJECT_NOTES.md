@@ -45,6 +45,15 @@ Routes principales :
 
 Display :
 
+- le display est maintenant rendu en pur Phaser : le DOM ne contient qu'un conteneur de canvas et les scripts, comme le player ;
+- la colonne droite Phaser gere le QR code cliquable, la liste des plateaux, les boutons d'action et le suivi des joueurs ;
+- le display separe trois couches Phaser : plateau statique, robots, UI ; pendant la partie, le plateau n'est redessine que si la carte ou le viewport changent, les robots sont des sprites deplaces/tournes par tween ;
+- le display utilise `shared/assets/images/fondDisplay.png` comme fond 1920x1080 ; la carte est contrainte a la zone `(20,20)-(1260,1060)` et les informations a `(1300,20)-(1900,1060)` ;
+- les cartes affichees dans la zone d'information du display utilisent la meme spritesheet `cartes.png` que le player, avec priorite ajoutee par Phaser ;
+- le display demande le plein ecran au chargement et retente au premier clic sur le canvas, selon les contraintes navigateur ;
+- les cartes du programme display sont scalees en hauteur selon la ligne joueur disponible, avec etats visuels : prochaine allumee, active clignotante, resolue eteinte/estompee ;
+- les lignes d'information display ont une hauteur bornee pour ne pas occuper toute la zone quand il y a peu de joueurs ;
+- pendant une timeline display, les robots concernes par des evenements animes ne sont pas resynchronises sur leur position finale avant le tween, afin d'eviter les flashes de position ;
 - le QR code joueur est cliquable et ouvre `/player/` dans un nouvel onglet ;
 - l'URL du QR code contient des parametres `join` et `v` regeneres a chaque appel de `/api/game/qr`, afin d'eviter les problemes de cache cote player ;
 - le bouton `Demarrer la partie` appelle `POST /api/game/start`, passe la partie de `lobby` a `programming`, initialise `turn` a `1` et ouvre la programmation aux joueurs ;
@@ -53,6 +62,8 @@ Display :
 - le bouton `Resoudre registre` appelle `POST /api/game/resolve-next` pour faciliter les tests de resolution.
 - `POST /api/game/resolve-next` avance maintenant d'un seul pas de cinematique : une carte robot par clic en priorite decroissante, puis une passe convoyeurs rapides, puis une passe convoyeurs rapides + normaux, puis les lasers ;
 - le bouton de resolution est verrouille pendant la duree estimee de l'animation pour eviter d'empiler des clics et de rendre les deplacements instantanes ;
+- les evenements de mouvement contiennent `fromX/fromY`, et les rotations `fromDirection`, afin que display et player animent toujours depuis l'etat de depart explicite ;
+- sur display, la carte suivante du registre courant est mise en avant ; pendant sa resolution elle clignote, puis elle passe en etat estompe une fois resolue ;
 - le panneau droit affiche la liste des plateaux disponibles via `/api/maps` ;
 - chaque plateau est presente avec son nom, ses dimensions et la miniature stockee dans son JSON ;
 - cliquer sur un plateau appelle `POST /api/game/new` avec son `mapId` et demarre une nouvelle partie sur ce plateau.
@@ -246,6 +257,7 @@ Etat actuel :
 - le plateau est deplacable et zoomable via Phaser ;
 - la carte s'affiche des le chargement de l'etat serveur, meme sans joueur connecte ;
 - les cartes du volet droit sont rendues dans Phaser et restent manipulables par glisser-deplacer apres connexion ;
+- le player affiche l'icone orientee du robot du joueur et sa jauge PV/checkpoint ;
 - la main joueur est affichee par priorite croissante ;
 - les registres affichent un point vert/rouge pour indiquer libre/bloque ;
 - les registres bloques refusent le drop.

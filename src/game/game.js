@@ -28,6 +28,8 @@ export function createGame({ map }) {
 }
 
 export function getPublicState(game) {
+  const eventLog = game.eventLog || [];
+  const eventStart = Math.max(0, eventLog.length - 100);
   return {
     schemaVersion: game.schemaVersion,
     id: game.id,
@@ -35,6 +37,7 @@ export function getPublicState(game) {
     turn: game.turn,
     register: game.register,
     phase: game.phase,
+    resolution: game.resolution || null,
     map: game.map,
     players: game.players.map((player) => ({
       id: player.id,
@@ -49,7 +52,10 @@ export function getPublicState(game) {
       hand: player.hand
     })),
     robots: game.robots,
-    eventLog: game.eventLog.slice(-100)
+    eventLog: eventLog.slice(eventStart).map((event, index) => ({
+      ...event,
+      seq: event.seq || eventStart + index + 1
+    }))
   };
 }
 

@@ -59,7 +59,20 @@ export function getPublicState(game) {
   };
 }
 
-export function joinGame(game, { name, robotId, socketId }) {
+export function joinGame(game, { name, robotId, socketId, clientToken }) {
+  const cleanClientToken = String(clientToken || "").trim().slice(0, 80);
+  const existing = cleanClientToken
+    ? game.players.find((player) => player.clientToken === cleanClientToken)
+    : null;
+  if (existing) {
+    if (robotId && existing.robotId !== robotId) {
+      throw new Error("Ce joueur a deja choisi un autre robot.");
+    }
+    existing.connected = true;
+    if (socketId) existing.socketId = socketId;
+    const robot = game.robots.find((item) => item.playerId === existing.id);
+    return { player: existing, robot };
+  }
   if (game.players.length >= MAX_PLAYERS) throw new Error("La partie est complete.");
   const cleanName = String(name || "").trim().slice(0, 24) || `Player ${game.players.length + 1}`;
   const resolvedRobotId = resolveRobotId(game, robotId);
@@ -68,6 +81,7 @@ export function joinGame(game, { name, robotId, socketId }) {
     id: createId("player"),
     name: cleanName,
     robotId: resolvedRobotId,
+    clientToken: cleanClientToken || null,
     socketId,
     ready: false,
     connected: true,

@@ -49,6 +49,8 @@ let boardRenderKey = "";
 let robotSprites = new Map();
 let boardMetrics = null;
 let activeResolutionStep = null;
+let restartButtonVisible = false;
+let restartConfirmVisible = false;
 
 try {
   await loadPhaser();
@@ -108,6 +110,11 @@ function create() {
     renderDisplay(this, latestState, previousState);
   });
   this.input.once("pointerdown", () => requestDisplayFullscreen(this));
+  this.input.keyboard?.on("keydown", (event) => {
+    if (event.code !== "ControlLeft" || event.repeat) return;
+    restartButtonVisible = true;
+    renderDisplay(this, latestState, previousState);
+  });
   if (qrPayload) setQrTexture(qrPayload.qr);
   renderDisplay(this, latestState, previousState);
 }
@@ -165,7 +172,7 @@ async function resolveNextRegister() {
     const payload = await fetchJson(`${basePath}/api/game/resolve-next`, { method: "POST" });
     if (!payload.ok) throw new Error(payload.error || "Resolution impossible");
     activeResolutionStep = payload.step;
-    applyState(payload.state);
+    handleIncomingState(payload.state);
     window.setTimeout(() => {
       activeResolutionStep = null;
       resolutionAnimationLocked = false;
@@ -185,6 +192,24 @@ async function startGame() {
     applyState(payload.state);
   } catch (error) {
     showDisplayError(`Demarrage impossible: ${error.message || error}`);
+  }
+}
+
+async function resetGame() {
+  try {
+    const payload = await fetchJson(`${basePath}/api/game/reset`, { method: "POST" });
+    if (!payload.ok) throw new Error(payload.error || "Reset impossible");
+    restartConfirmVisible = false;
+    restartButtonVisible = false;
+    boardRenderKey = "";
+    activeResolutionStep = null;
+    resolutionAnimationLocked = false;
+    previousState = null;
+    applyState(payload.state);
+    await loadQr();
+  } catch (error) {
+    restartConfirmVisible = false;
+    showDisplayError(`Reset impossible: ${error.message || error}`);
   }
 }
 
@@ -230,7 +255,7 @@ function canResolveNext(state) {
 }
 
 function timelineDurationForEvents(events) {
-  return Math.max(350, events.reduce((total, event) => total + timelineEventDuration(event), 0) + 80);
+  return Math.max(350, timelineEntries(events).reduce((total, entry) => total + timelineEntryDuration(entry), 0) + 80);
 }
 
 function renderMapList() {
@@ -324,6 +349,7 @@ function ensureDisplayLayers(scene) {
 function renderUi(scene, state) {
   uiLayer.removeAll(true);
   drawSidePanel(scene, state);
+  drawRestartControls(scene);
   if (displayErrorMessage) drawDisplayError(scene, displayErrorMessage);
 }
 
@@ -438,6 +464,49 @@ function drawActionButton(scene, x, y, width, height, label, enabled, action) {
     button.setInteractive({ useHandCursor: true });
     button.on("pointerdown", action);
   }
+}
+
+function drawRestartControls(scene) {
+  if (!restartButtonVisible && !restartConfirmVisible) return;
+  const x = INFO_ZONE.x + INFO_ZONE.width - 154;
+  const y = INFO_ZONE.y + INFO_ZONE.height - 54;
+  if (restartButtonVisible && !restartConfirmVisible) {
+    drawActionButton(scene, x, y, 146, 42, "RESTART", true, () => {
+      restartConfirmVisible = true;
+      renderDisplay(scene, latestState, previousState);
+    });
+  }
+  if (restartConfirmVisible) drawRestartConfirmation(scene);
+}
+
+function drawRestartConfirmation(scene) {
+  const boxWidth = 760;
+  const boxHeight = 260;
+  const x = (DESIGN_WIDTH - boxWidth) / 2;
+  const y = (DESIGN_HEIGHT - boxHeight) / 2;
+  const backdrop = scene.add.rectangle(0, 0, DESIGN_WIDTH, DESIGN_HEIGHT, 0x000000, 0.68).setOrigin(0);
+  uiLayer.add(backdrop);
+  const box = scene.add.rectangle(x, y, boxWidth, boxHeight, 0x171c20, 0.98).setOrigin(0);
+  box.setStrokeStyle(2, 0xff3b42, 0.95);
+  uiLayer.add(box);
+  uiLayer.add(scene.add.text(x + boxWidth / 2, y + 52, "RESTART COMPLET", {
+    fontFamily: "Arial",
+    fontSize: "30px",
+    fontStyle: "bold",
+    color: "#ffdddd"
+  }).setOrigin(0.5));
+  uiLayer.add(scene.add.text(x + boxWidth / 2, y + 106, "Les joueurs seront sortis de la partie et devront rescanner le QR code.", {
+    fontFamily: "Arial",
+    fontSize: "18px",
+    color: "#dce5ec",
+    wordWrap: { width: boxWidth - 80 },
+    align: "center"
+  }).setOrigin(0.5));
+  drawActionButton(scene, x + 118, y + 176, 220, 48, "ANNULER", true, () => {
+    restartConfirmVisible = false;
+    renderDisplay(scene, latestState, previousState);
+  });
+  drawActionButton(scene, x + boxWidth - 338, y + 176, 220, 48, "CONFIRMER", true, resetGame);
 }
 
 function drawPlayerRow(scene, x, y, width, rowHeight, player, robot, showProgram, register, state) {
@@ -818,13 +887,38 @@ function playEventTimeline(scene, state, events, robotSprites, tileSize, offsetX
   }
   prepareSpritesForTimeline(robotSprites, events, tileSize, offsetX, offsetY);
   let cursor = 0;
-  for (const event of events) {
+  for (const entry of timelineEntries(events)) {
     const delay = cursor;
-    const duration = timelineEventDuration(event);
-    scene.time.delayedCall(delay, () => playTimelineEvent(scene, state, event, robotSprites, tileSize, offsetX, offsetY, duration));
+    const duration = timelineEntryDuration(entry);
+    scene.time.delayedCall(delay, () => playTimelineEntry(scene, state, entry, robotSprites, tileSize, offsetX, offsetY, duration));
     cursor += duration;
   }
   scene.time.delayedCall(cursor + 20, () => syncRobotSpritesToState(robotSprites, state, tileSize, offsetX, offsetY));
+}
+
+function timelineEntries(events) {
+  const entries = [];
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    if (event.type !== "robot_moved" || !event.moveGroup) {
+      entries.push(event);
+      continue;
+    }
+    const group = [event];
+    let nextIndex = index + 1;
+    while (nextIndex < events.length && events[nextIndex].type === "robot_moved" && events[nextIndex].moveGroup === event.moveGroup) {
+      group.push(events[nextIndex]);
+      nextIndex += 1;
+    }
+    entries.push(group);
+    index = nextIndex - 1;
+  }
+  return entries;
+}
+
+function timelineEntryDuration(entry) {
+  if (Array.isArray(entry)) return Math.max(...entry.map(timelineEventDuration));
+  return timelineEventDuration(entry);
 }
 
 function prepareSpritesForTimeline(robotSprites, events, tileSize, offsetX, offsetY) {
@@ -864,6 +958,14 @@ function playTimelineEvent(scene, state, event, robotSprites, tileSize, offsetX,
   } else if (event.type === "robot_destroyed" && sprite) {
     flashRobot(scene, sprite);
   }
+}
+
+function playTimelineEntry(scene, state, entry, robotSprites, tileSize, offsetX, offsetY, duration) {
+  if (Array.isArray(entry)) {
+    entry.forEach((event) => playTimelineEvent(scene, state, event, robotSprites, tileSize, offsetX, offsetY, duration));
+    return;
+  }
+  playTimelineEvent(scene, state, entry, robotSprites, tileSize, offsetX, offsetY, duration);
 }
 
 function timelineEventDuration(event) {

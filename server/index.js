@@ -122,6 +122,17 @@ router.post("/api/game/start", async (_req, res) => {
   }
 });
 
+router.post("/api/game/reset", async (_req, res) => {
+  try {
+    activeGame = createGame({ map: activeGame.map });
+    await storage.writeSave(activeGame);
+    broadcastState();
+    res.json({ ok: true, state: getPublicState(activeGame) });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
 router.get("/api/game/qr", async (req, res) => {
   res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   res.set("Pragma", "no-cache");
@@ -178,13 +189,28 @@ router.post("/api/player/program", async (req, res) => {
 io.on("connection", (socket) => {
   socket.emit("game:state", getPublicState(activeGame));
 
-  socket.on("player:join", async ({ name, robotId } = {}, reply) => {
+  socket.on("player:join", async ({ name, robotId, clientToken } = {}, reply) => {
     try {
-      const result = joinGame(activeGame, { name, robotId, socketId: socket.id });
+      const result = joinGame(activeGame, { name, robotId, clientToken, socketId: socket.id });
       socket.data.playerId = result.player.id;
       await storage.writeSave(activeGame);
       broadcastState();
       reply?.({ ok: true, playerId: result.player.id, state: getPublicState(activeGame) });
+    } catch (error) {
+      reply?.({ ok: false, error: error.message });
+    }
+  });
+
+  socket.on("player:bind", async ({ playerId, clientToken } = {}, reply) => {
+    try {
+      const player = activeGame.players.find((item) => item.id === playerId && item.clientToken === clientToken);
+      if (!player) throw new Error("Session joueur introuvable.");
+      player.connected = true;
+      player.socketId = socket.id;
+      socket.data.playerId = player.id;
+      await storage.writeSave(activeGame);
+      broadcastState();
+      reply?.({ ok: true, state: getPublicState(activeGame) });
     } catch (error) {
       reply?.({ ok: false, error: error.message });
     }

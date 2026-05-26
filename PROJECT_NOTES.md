@@ -1,6 +1,6 @@
 # RoboRally - Notes de reprise
 
-Date de derniere mise a jour : 2026-05-20
+Date de derniere mise a jour : 2026-05-26
 
 ## Objectif du projet
 
@@ -39,6 +39,7 @@ Routes principales :
 - `/backoffice?test` : environnement de test plateau/robots/cartes ;
 - `/api/game/state` : etat public de la partie ;
 - `/api/game/new` : recharge une nouvelle partie depuis une map ;
+- `/api/game/reset` : reset complet de la partie courante sur le meme plateau, sans joueurs ;
 - `/api/game/qr` : QR code vers l'interface joueur.
 - `/api/maps` : liste et creation des maps ;
 - `/api/maps/:mapId` : lecture et sauvegarde d'une map JSON.
@@ -50,7 +51,7 @@ Display :
 - le display separe trois couches Phaser : plateau statique, robots, UI ; pendant la partie, le plateau n'est redessine que si la carte ou le viewport changent, les robots sont des sprites deplaces/tournes par tween ;
 - le display utilise `shared/assets/images/fondDisplay.png` comme fond 1920x1080 ; la carte est contrainte a la zone `(20,20)-(1260,1060)` et les informations a `(1300,20)-(1900,1060)` ;
 - les cartes affichees dans la zone d'information du display utilisent la meme spritesheet `cartes.png` que le player, avec priorite ajoutee par Phaser ;
-- le display demande le plein ecran au chargement et retente au premier clic sur le canvas, selon les contraintes navigateur ;
+- le display demande le plein ecran au premier clic sur le canvas, selon les contraintes navigateur ;
 - les cartes du programme display sont scalees en hauteur selon la ligne joueur disponible, avec etats visuels : prochaine allumee, active clignotante, resolue eteinte/estompee ;
 - les lignes d'information display ont une hauteur bornee pour ne pas occuper toute la zone quand il y a peu de joueurs ;
 - pendant une timeline display, les robots concernes par des evenements animes ne sont pas resynchronises sur leur position finale avant le tween, afin d'eviter les flashes de position ;
@@ -59,14 +60,19 @@ Display :
 - le bouton `Demarrer la partie` appelle `POST /api/game/start`, passe la partie de `lobby` a `programming`, initialise `turn` a `1` et ouvre la programmation aux joueurs ;
 - des que la partie demarre, le QR code, la selection de plateau et le bouton de demarrage disparaissent du display ;
 - la colonne droite devient le suivi des joueurs : icone du robot orientee en temps reel, points de vie, puis programme visible uniquement quand tous les joueurs ont fini leur programmation ;
-- le bouton `Resoudre registre` appelle `POST /api/game/resolve-next` pour faciliter les tests de resolution.
-- `POST /api/game/resolve-next` avance maintenant d'un seul pas de cinematique : une carte robot par clic en priorite decroissante, puis une passe convoyeurs rapides, puis une passe convoyeurs rapides + normaux, puis les lasers ;
+- le bouton `Action suivante` appelle `POST /api/game/resolve-next` pour faciliter les tests de resolution.
+- `POST /api/game/resolve-next` avance maintenant d'un seul pas de cinematique : une carte robot par clic en priorite decroissante, puis une passe convoyeurs rapides si utile, puis une passe convoyeurs rapides + normaux si utile, puis les rotators si utiles, puis les lasers ;
+- les sequences inutiles sont omises : pas d'etape convoyeurs rapides sans robot concerne, pas d'etape rotators sans robot concerne, pas de tir de robot si aucun robot ne peut etre touche ;
 - le bouton de resolution est verrouille pendant la duree estimee de l'animation pour eviter d'empiler des clics et de rendre les deplacements instantanes ;
 - les evenements de mouvement contiennent `fromX/fromY`, et les rotations `fromDirection`, afin que display et player animent toujours depuis l'etat de depart explicite ;
+- les evenements de mouvement peuvent contenir un `moveGroup` ; tous les `robot_moved` consecutifs du meme groupe sont animes en parallele, notamment pour les poussees ;
+- les evenements publics possedent un `seq` stable, afin que display/player detectent les nouveaux evenements meme lorsque le log public est tronque a 100 entrees ;
 - sur display, la carte suivante du registre courant est mise en avant ; pendant sa resolution elle clignote, puis elle passe en etat estompe une fois resolue ;
 - le panneau droit affiche la liste des plateaux disponibles via `/api/maps` ;
 - chaque plateau est presente avec son nom, ses dimensions et la miniature stockee dans son JSON ;
 - cliquer sur un plateau appelle `POST /api/game/new` avec son `mapId` et demarre une nouvelle partie sur ce plateau.
+- un appui sur `Ctrl gauche` dans le display fait apparaitre un bouton `RESTART` ;
+- le clic sur `RESTART`, puis confirmation, appelle `POST /api/game/reset`, recree une partie vide sur le meme plateau, regenere le QR code, et oblige les joueurs a rescanner.
 
 Backoffice :
 
@@ -184,28 +190,36 @@ Elements de plateau pris en compte dans le premier moteur :
 
 - convoyeurs ;
 - murs ;
-- trous.
+- trous ;
+- lasers ;
+- rotators.
 
 Implementation initiale :
 
 - `src/game/rules.js` contient le premier moteur de resolution serveur ;
-- `resolveSegment(game, registerIndex)` execute un registre : cartes par priorite decroissante, puis deux vagues de convoyeurs ;
+- `resolveSegment(game, registerIndex)` execute un registre : cartes par priorite decroissante, convoyeurs rapides, convoyeurs rapides + normaux, rotators, lasers ;
+- `resolveNextStep(game)` execute la meme logique en pas a pas pour display ;
 - les deplacements serveur prennent en compte murs, trous, poussee de robots physiques, robots holographiques ignores par les interactions physiques, destruction et respawn ;
+- les murs bloquent les deplacements, les chaines de poussee et les lasers ; le moteur accepte les formats `walls: ["north"]`, `walls: { north: true }`, `wall: "north"` et `wall: { north: true }` ;
 - les convoyeurs sont resolus en deux vagues : rapides seuls, puis rapides + normaux ;
 - les conflits de destination entre robots deplaces par une meme vague de convoyeurs annulent les deplacements concernes ;
 - les lasers fixes et les lasers frontaux des robots sont resolus apres les convoyeurs ;
 - les lasers s'arretent aux murs et au premier robot physique touche ;
 - les robots holographiques ne sont pas touches par les lasers et ne tirent pas ;
 - les lasers fixes infligent `power` degats, de `1` a `3`, et les lasers de robots infligent `1` degat ;
+- les tirs de robot sans cible potentielle ne generent plus de sequence de tir ;
+- les rotators agissent apres les convoyeurs lents, avant les lasers, y compris sur les robots holographiques ;
+- les rotators generent des evenements `robot_rotated` avec `source: "rotator"` ;
 - un robot detruit par degats a `10` ou plus respawn immediatement selon les regles, puis reste inactif jusqu'au segment suivant ;
 - le serveur calcule les registres bloques avec `max(0, degats - 4)` et conserve leurs cartes au tour suivant ;
 - en fin de tour, les cartes non bloquees de la main sont defaussees, puis une nouvelle main de `9 - degats` cartes est distribuee ;
 - l'etat public expose `blockedRegisters`, `program` et `programCards` pour que l'interface joueur affiche les registres verrouilles meme si la carte n'est plus dans la main ;
 - les interfaces `/display/` et `/player/` exploitent les nouveaux evenements serveur sous forme de timeline ;
-- les evenements `robot_moved`, `robot_rotated` et `conveyor_rotated` sont rejoues dans l'ordre, avec tween d'environ `1` seconde par effet ;
+- les evenements `robot_moved`, `robot_rotated`, `conveyor_rotated` et les rotations de rotators sont rejoues dans l'ordre, avec tween d'environ `1` seconde par effet ;
+- les poussees sont materialisees par des mouvements simultanes du pousseur et du pousse grace au champ `moveGroup` ;
 - les evenements `robot_damaged` provoquent un flash court du robot touche ;
 - les evenements `laser_fired` avec cible affichent un rayon bref entre la source et le robot touche ;
-- `POST /api/game/resolve-next` resout le prochain registre pour le debug serveur ;
+- `POST /api/game/resolve-next` resout la prochaine action/phase utile pour le debug serveur ;
 - la timeline UI reste basee sur les evenements produits par le moteur ; une separation plus fine par sous-phase explicite pourra etre ajoutee si necessaire.
 
 Les autres elements du plateau seront integres plus tard.
@@ -226,18 +240,45 @@ Convoyeurs :
 - quand un robot entre sur un `2 entrees` par convoyeur via la deuxieme entree du sigle, la rotation d'entree est appliquee pendant la translation ;
 - sinon, pas de rotation sur le `2 entrees`.
 
+Rotators :
+
+- les rotators sont dans `gears.png` ;
+- rotator horaire : frame `4` ;
+- rotator antihoraire : frame `5` ;
+- ils agissent apres les convoyeurs lents et avant les lasers ;
+- ils agissent sur les robots holographiques ;
+- s'aucun robot actif n'est sur un rotator, la phase `rotators` est sautee en resolution pas a pas.
+
+Murs :
+
+- le sprite de mur est dans `walls.png`, frame `7`, defini sur un cote de case ;
+- un mur sur la case courante bloque la sortie dans sa direction ;
+- un mur sur la case cible bloque l'entree depuis la direction opposee ;
+- les murs bloquent les mouvements par carte, les convoyeurs, les poussees et les lasers ;
+- les murs en bord de carte bloquent aussi la sortie avant le test hors plateau.
+
 Display et interface joueur :
 
 - le display commence par afficher la liste des plateaux disponibles ;
 - apres choix du plateau, le display affiche un QR code ;
-- les joueurs scannent le QR code, choisissent leur robot et saisissent leur pseudo ;
-- le display affiche une colonne avec robot, pseudo, progression checkpoints et points de vie ;
+- les joueurs scannent le QR code et choisissent leur robot ;
+- le display affiche une colonne avec robot, progression checkpoints/PV et programme du tour ;
 - les interfaces joueurs repliquent le plateau ;
 - les robots clignotent lentement par alpha avec une periode de `2` secondes ;
 - un robot holographique apparait ethere, en greyscale, avec un outline vif dans la couleur principale du robot ;
 - si plusieurs robots sont sur la meme case, ils apparaissent a tour de role ;
 - un joueur peut alterner entre la vue globale de tous les robots et la vue limitee a son propre robot ;
 - le plateau joueur est scrollable et zoomable.
+
+Reset de partie :
+
+- sur display, `Ctrl gauche` revele un bouton `RESTART` ;
+- `RESTART` affiche une confirmation ;
+- confirmation appelle `POST /api/game/reset` ;
+- le serveur cree une nouvelle partie vide sur le meme plateau, avec un nouvel `id` ;
+- le QR code est regenere ;
+- les players deja ouverts detectent le changement d'id, effacent `roborally.playerId` et `roborally.clientToken`, et affichent que le QR code est expire ;
+- les joueurs doivent rescanner le nouveau QR code pour rejoindre.
 
 ## Interface joueur
 
@@ -623,13 +664,21 @@ Au chargement du player, la premiere action du joueur est le choix de son robot 
 
 Le serveur verifie aussi l'exclusivite du choix : deux joueurs ne peuvent pas rejoindre la partie avec le meme `robotId`.
 
+Le join joueur est idempotent via `roborally.clientToken` :
+
+- un meme telephone peut retenter `player:join` par Socket.IO puis REST sans bloquer son propre robot ;
+- si le serveur a deja cree le joueur pour ce token, il renvoie le meme `playerId` ;
+- un autre telephone ne peut toujours pas prendre un robot deja choisi ;
+- l'evenement Socket.IO `player:bind` rattache un socket reconnecte a un joueur existant ;
+- le player n'utilise les commandes Socket.IO de programmation/orientation que lorsque le socket est bien lie au joueur.
+
 Le display affiche le QRCode cliquable vers `/player/`, mais n'affiche plus l'adresse en texte afin de garder l'ecran commun lisible.
 
 ## Points a faire ensuite
 
-- Continuer la validation des convoyeurs, d'abord les virages antihoraires ;
-- basculer progressivement les cartes joueur vers un rendu Phaser complet si souhaite ;
-- utiliser les spritesheets restantes : murs, lasers, gears, zones, pushers, crush ;
-- enrichir le modele JSON des maps pour decrire proprement les grands trous, convoyeurs, murs, lasers, pousseurs, ecraseurs ;
-- implementer la resolution serveur des cartes programmees ;
-- ajouter l'editeur de maps.
+- Continuer les tests grandeur nature multi-joueurs apres ajout du reset et du join idempotent ;
+- implementer les pousseurs et ecraseurs dans le moteur de regles ;
+- definir l'ordre d'action des autres elements de plateau restants ;
+- enrichir le modele JSON des maps pour decrire proprement les grands trous, pousseurs, ecraseurs et eventuels elements speciaux ;
+- finaliser les conditions de victoire et l'affichage de fin de partie ;
+- renforcer les tests automatises du moteur de regles.

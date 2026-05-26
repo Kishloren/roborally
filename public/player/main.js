@@ -1,5 +1,6 @@
 const basePath = detectBasePath("player");
 const socket = window.io?.({ path: `${basePath}/socket.io` });
+const requestedGameId = new URLSearchParams(window.location.search).get("game") || "";
 
 const DESIGN_HEIGHT = 1080;
 const MIN_DESIGN_WIDTH = 1920;
@@ -33,6 +34,12 @@ const FAST_TURN_TRANSFORMS = {
 };
 
 let playerId = window.localStorage.getItem("roborally.playerId");
+let clientToken = window.localStorage.getItem("roborally.clientToken");
+if (!clientToken) {
+  clientToken = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  window.localStorage.setItem("roborally.clientToken", clientToken);
+}
+let socketPlayerBound = false;
 let selectedRobotId = null;
 let program = Array(5).fill(null);
 let programSyncKey = "";
@@ -52,6 +59,7 @@ let pollingTimer = null;
 let currentDesignWidth = MIN_DESIGN_WIDTH;
 let debugViewport = { width: 0, height: 0, dpr: 1, renderResolution: 1, source: "init" };
 let titleSceneRef = null;
+let titleStatusOverride = "";
 
 window.addEventListener("resize", enforceLandscapeLock);
 window.addEventListener("orientationchange", enforceLandscapeLock);
@@ -59,15 +67,16 @@ window.addEventListener("fullscreenchange", enforceLandscapeLock);
 window.visualViewport?.addEventListener("resize", enforceLandscapeLock);
 
 if (socket) {
-  socket.on("game:state", (state) => {
-    previousState = latestState;
-    latestState = state;
-    render(previousState);
-    titleSceneRef?.refreshRobotPicker?.();
+  socket.on("game:state", handleIncomingPlayerState);
+  socket.on("connect", () => {
+    stopPolling();
+    bindSocketPlayer();
   });
-  socket.on("connect", stopPolling);
   socket.on("connect_error", startPolling);
-  socket.on("disconnect", startPolling);
+  socket.on("disconnect", () => {
+    socketPlayerBound = false;
+    startPolling();
+  });
 } else {
   startPolling();
 }
@@ -75,6 +84,11 @@ if (socket) {
 // Initialisation Phaser en bas de fichier, une fois les classes de scene declarees.
 
 async function joinGame() {
+  if (isStalePlayerUrl()) {
+    titleSceneRef?.setStatus("QR code expire. Scanne le nouveau QR code.");
+    titleSceneRef?.updateStartButtonState?.();
+    return;
+  }
   if (!selectedRobotId) {
     titleSceneRef?.setStatus("Choisis un robot.");
     titleSceneRef?.updateStartButtonState?.();
@@ -82,13 +96,17 @@ async function joinGame() {
   }
   if (socket?.connected) {
     try {
-      handleJoinReply(await emitWithAck("player:join", { name: "Player", robotId: selectedRobotId }));
+      const reply = await emitWithAck("player:join", { name: "Player", robotId: selectedRobotId, clientToken });
+      handleJoinReply(reply);
+      socketPlayerBound = Boolean(reply?.ok);
       return;
-    } catch {
+    } catch (error) {
+      titleSceneRef?.setStatus("Socket lent, tentative HTTP...");
       startPolling();
     }
   }
-  handleJoinReply(await postJson(`${basePath}/api/player/join`, { name: "Player", robotId: selectedRobotId }));
+  handleJoinReply(await postJson(`${basePath}/api/player/join`, { name: "Player", robotId: selectedRobotId, clientToken }));
+  socketPlayerBound = false;
 }
 
 function handleJoinReply(reply) {
@@ -105,8 +123,56 @@ function handleJoinReply(reply) {
   titleSceneRef?.startGame();
 }
 
+async function bindSocketPlayer() {
+  if (!socket?.connected || !playerId || !clientToken || socketPlayerBound) return;
+  try {
+    const reply = await emitWithAck("player:bind", { playerId, clientToken });
+    if (reply?.ok) {
+      socketPlayerBound = true;
+      if (reply.state) {
+        previousState = latestState;
+        latestState = reply.state;
+        render(previousState);
+        titleSceneRef?.refreshRobotPicker?.();
+      }
+    }
+  } catch {}
+}
+
 function hasCurrentPlayer() {
   return Boolean(playerId && latestState?.players.some((item) => item.id === playerId));
+}
+
+function isStalePlayerUrl() {
+  return Boolean(requestedGameId && latestState?.id && latestState.id !== requestedGameId);
+}
+
+function handleIncomingPlayerState(state) {
+  const previous = latestState;
+  if (previous?.id && state?.id && previous.id !== state.id && playerId) {
+    expirePlayerSession("Partie relancee. Scanne le nouveau QR code.");
+  }
+  previousState = latestState;
+  latestState = state;
+  render(previousState);
+  titleSceneRef?.refreshRobotPicker?.();
+}
+
+function expirePlayerSession(message) {
+  playerId = null;
+  clientToken = null;
+  socketPlayerBound = false;
+  selectedRobotId = null;
+  program = Array(5).fill(null);
+  programSyncKey = "";
+  handOrder = [];
+  orientationSelections.clear();
+  window.localStorage.removeItem("roborally.playerId");
+  window.localStorage.removeItem("roborally.clientToken");
+  titleStatusOverride = message;
+  if (playerScene?.scene?.isActive("PlayerScene")) {
+    playerScene.scene.start("TitleScene");
+  }
 }
 
 function occupiedRobotIds() {
@@ -156,7 +222,6 @@ function drawBoard(scene, state, previous = null) {
     boardView.mapId = map.id;
   }
   const specialTiles = new Map(map.tiles.map((tile) => [`${tile.x},${tile.y}`, tile]));
-  const robotsByCell = new Map(state.robots.map((robot) => [`${robot.x},${robot.y}`, robot]));
   const previousRobots = new Map((previous?.robots || []).map((robot) => [robot.id, robot]));
   const changedEvents = newEvents(previous, state);
   const robotSprites = new Map();
@@ -196,16 +261,16 @@ function drawBoard(scene, state, previous = null) {
         if (tile.walls) boardContainer.add(addWallTiles(scene, tile.walls, px, py, tileSize));
       }
       boardContainer.add(scene.add.rectangle(px, py, tileSize, tileSize).setOrigin(0).setStrokeStyle(1, 0x3a424a));
-      if (robot) {
-        const animationRobot = previousRobots.get(robot.id) || robot;
-        const displayRobot = needsOrientationChoice(robot)
-          ? displayRobotWithPendingOrientation(robot)
-          : animationRobot;
-        const sprite = addRobot(scene, displayRobot, px, py, tileSize);
-        robotSprites.set(robot.id, sprite);
-        boardContainer.add(sprite);
-      }
     }
+  }
+  for (const robot of state.robots) {
+    const animationRobot = previousRobots.get(robot.id) || robot;
+    const displayRobot = needsOrientationChoice(robot)
+      ? displayRobotWithPendingOrientation(robot)
+      : animationRobot;
+    const sprite = addRobot(scene, displayRobot, displayRobot.x * tileSize, displayRobot.y * tileSize, tileSize);
+    robotSprites.set(robot.id, sprite);
+    boardContainer.add(sprite);
   }
   playEventTimeline(scene, boardContainer, state, changedEvents, robotSprites, tileSize);
   clampBoardView();
@@ -525,13 +590,38 @@ function playEventTimeline(scene, boardContainer, state, events, robotSprites, t
   }
   prepareSpritesForTimeline(robotSprites, events, tileSize);
   let cursor = 0;
-  for (const event of events) {
+  for (const entry of timelineEntries(events)) {
     const delay = cursor;
-    const duration = timelineEventDuration(event);
-    scene.time.delayedCall(delay, () => playTimelineEvent(scene, boardContainer, state, event, robotSprites, tileSize, duration));
+    const duration = timelineEntryDuration(entry);
+    scene.time.delayedCall(delay, () => playTimelineEntry(scene, boardContainer, state, entry, robotSprites, tileSize, duration));
     cursor += duration;
   }
   scene.time.delayedCall(cursor + 20, () => syncRobotSpritesToState(robotSprites, state, tileSize));
+}
+
+function timelineEntries(events) {
+  const entries = [];
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    if (event.type !== "robot_moved" || !event.moveGroup) {
+      entries.push(event);
+      continue;
+    }
+    const group = [event];
+    let nextIndex = index + 1;
+    while (nextIndex < events.length && events[nextIndex].type === "robot_moved" && events[nextIndex].moveGroup === event.moveGroup) {
+      group.push(events[nextIndex]);
+      nextIndex += 1;
+    }
+    entries.push(group);
+    index = nextIndex - 1;
+  }
+  return entries;
+}
+
+function timelineEntryDuration(entry) {
+  if (Array.isArray(entry)) return Math.max(...entry.map(timelineEventDuration));
+  return timelineEventDuration(entry);
 }
 
 function prepareSpritesForTimeline(robotSprites, events, tileSize) {
@@ -571,6 +661,14 @@ function playTimelineEvent(scene, boardContainer, state, event, robotSprites, ti
   } else if (event.type === "robot_destroyed" && sprite) {
     flashRobot(scene, sprite);
   }
+}
+
+function playTimelineEntry(scene, boardContainer, state, entry, robotSprites, tileSize, duration) {
+  if (Array.isArray(entry)) {
+    entry.forEach((event) => playTimelineEvent(scene, boardContainer, state, event, robotSprites, tileSize, duration));
+    return;
+  }
+  playTimelineEvent(scene, boardContainer, state, entry, robotSprites, tileSize, duration);
 }
 
 function timelineEventDuration(event) {
@@ -1207,7 +1305,7 @@ async function submitProgram() {
     if (!orientationReply?.ok) return;
     orientationSelections.delete(robot.id);
   }
-  if (socket?.connected) {
+  if (socket?.connected && socketPlayerBound) {
     socket.emit("player:program", { cards: program }, (reply) => {
       if (!reply.ok) alert(reply.error);
     });
@@ -1218,7 +1316,7 @@ async function submitProgram() {
 }
 
 async function submitOrientation(direction) {
-  if (socket?.connected) {
+  if (socket?.connected && socketPlayerBound) {
     return new Promise((resolve) => {
       socket.emit("player:orientation", { direction }, (reply) => {
         if (!reply.ok) console.warn(reply.error);
@@ -1238,10 +1336,7 @@ async function submitOrientation(direction) {
 
 async function pollState() {
   const response = await fetch(`${basePath}/api/game/state`, { cache: "no-store" });
-  previousState = latestState;
-  latestState = await response.json();
-  render(previousState);
-  titleSceneRef?.refreshRobotPicker?.();
+  handleIncomingPlayerState(await response.json());
 }
 
 function startPolling() {
@@ -1260,7 +1355,7 @@ function stopPolling() {
 
 function emitWithAck(eventName, payload) {
   return new Promise((resolve, reject) => {
-    socket.timeout(1500).emit(eventName, payload, (error, reply) => {
+    socket.timeout(5000).emit(eventName, payload, (error, reply) => {
       if (error) reject(error);
       else resolve(reply);
     });
@@ -1273,7 +1368,12 @@ async function postJson(url, payload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
-  return response.json();
+  const text = await response.text();
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    return { ok: false, error: `Reponse non JSON (${response.status})` };
+  }
+  return JSON.parse(text);
 }
 
 let BootScene;
@@ -1353,7 +1453,7 @@ TitleScene = class TitleScene extends Phaser.Scene {
     titleSceneRef = this;
     requestPlayerFullscreen(this);
     lockLandscape(this);
-    this.setStatus("Choisis ton robot");
+    this.setStatus(titleStatusOverride || (isStalePlayerUrl() ? "QR code expire. Scanne le nouveau QR code." : "Choisis ton robot"));
     this.createRobotPicker();
     this.createStartButton();
     this.refreshRobotPicker();
@@ -1391,6 +1491,10 @@ TitleScene = class TitleScene extends Phaser.Scene {
       const hit = this.add.rectangle(x, y, tile * 1.24, tile * 1.24, 0xffffff, 0.001)
         .setInteractive({ useHandCursor: true });
       hit.on("pointerdown", () => {
+        if (isStalePlayerUrl()) {
+          this.setStatus("QR code expire. Scanne le nouveau QR code.");
+          return;
+        }
         if (occupiedRobotIds().has(robotId)) {
           this.setStatus("Robot deja choisi.");
           return;
@@ -1420,6 +1524,10 @@ TitleScene = class TitleScene extends Phaser.Scene {
     this.startButton = button;
     this.startLabel = label;
     button.on("pointerdown", async () => {
+      if (isStalePlayerUrl()) {
+        this.setStatus("QR code expire. Scanne le nouveau QR code.");
+        return;
+      }
       if (!selectedRobotId) {
         this.setStatus("Choisis un robot.");
         return;
@@ -1427,7 +1535,11 @@ TitleScene = class TitleScene extends Phaser.Scene {
       button.disableInteractive();
       label.setText("CONNEXION...");
       this.setStatus("Connexion a la partie");
-      await joinGame();
+      try {
+        await joinGame();
+      } catch (error) {
+        this.setStatus(`Connexion impossible: ${error.message || error}`);
+      }
       if (!hasCurrentPlayer()) {
         button.setInteractive({ useHandCursor: true });
         this.refreshRobotPicker();
@@ -1458,10 +1570,11 @@ TitleScene = class TitleScene extends Phaser.Scene {
 
   updateStartButtonState() {
     if (!this.startButton || !this.startLabel) return;
-    const canStart = Boolean(selectedRobotId);
+    const stale = isStalePlayerUrl();
+    const canStart = Boolean(selectedRobotId) && !stale;
     this.startButton.setFillStyle(canStart ? 0xf2c14e : 0x3d454b, 1);
     this.startButton.setStrokeStyle(2, canStart ? 0xffffff : 0x6f7a83, canStart ? 0.25 : 0.6);
-    this.startLabel.setText(canStart ? "DEMARRER" : "CHOISIS UN ROBOT");
+    this.startLabel.setText(stale ? "QR EXPIRE" : canStart ? "DEMARRER" : "CHOISIS UN ROBOT");
     this.startLabel.setColor(canStart ? "#101316" : "#dce5ec");
   }
 

@@ -33,6 +33,7 @@ export function resolveSegment(game, registerIndex = game.register || 0) {
 
   resolveConveyorWave(game, ["fast"], "fast_conveyors", events);
   resolveConveyorWave(game, ["fast", "normal"], "all_conveyors", events);
+  resolveRotators(game, events);
   resolveLasers(game, events);
 
   game.register = registerIndex + 1;
@@ -85,15 +86,28 @@ export function resolveNextStep(game) {
   if (resolution.stage === "fast_conveyors") {
     resolveConveyorWave(game, ["fast"], "fast_conveyors", events);
     resolution.stage = "all_conveyors";
-    appendResolutionEvents(game, events);
-    return { stage: "fast_conveyors", events };
+    if (events.length) {
+      appendResolutionEvents(game, events);
+      return { stage: "fast_conveyors", events };
+    }
   }
 
   if (resolution.stage === "all_conveyors") {
     resolveConveyorWave(game, ["fast", "normal"], "all_conveyors", events);
+    resolution.stage = "rotators";
+    if (events.length) {
+      appendResolutionEvents(game, events);
+      return { stage: "all_conveyors", events };
+    }
+  }
+
+  if (resolution.stage === "rotators") {
+    resolveRotators(game, events);
     resolution.stage = "lasers";
-    appendResolutionEvents(game, events);
-    return { stage: "all_conveyors", events };
+    if (events.length) {
+      appendResolutionEvents(game, events);
+      return { stage: "rotators", events };
+    }
   }
 
   if (resolution.stage === "lasers") {
@@ -155,7 +169,7 @@ function executeCard(game, robot, card, events) {
     const distance = Math.abs(card.distance);
     const direction = card.distance >= 0 ? robot.direction : oppositeDirection(robot.direction);
     for (let step = 0; step < distance; step += 1) {
-      if (!moveRobot(game, robot, direction, "card", events)) break;
+      if (!moveRobot(game, robot, direction, "card", events, { moveGroup: createMoveGroup() })) break;
       if (robot.destroyed || robot.eliminated) break;
     }
   }
@@ -187,7 +201,7 @@ function resolveConveyorWave(game, types, wave, events) {
       events.push({ type: "conveyor_conflict", wave, robotId: intention.robot.id, x: intention.target.x, y: intention.target.y });
       continue;
     }
-    if (moveRobot(game, intention.robot, intention.direction, "conveyor", events, { movingIds })) {
+    if (moveRobot(game, intention.robot, intention.direction, "conveyor", events, { movingIds, moveGroup: createMoveGroup() })) {
       applyConveyorArrivalRotation(game, intention.robot, intention.conveyor, intention.direction, events);
       events.push({ type: "conveyor_moved", wave, robotId: intention.robot.id, x: intention.robot.x, y: intention.robot.y });
     }
@@ -216,7 +230,7 @@ function moveRobot(game, robot, direction, source, events, options = {}) {
 
   robot.x = target.x;
   robot.y = target.y;
-  events.push({ type: "robot_moved", robotId: robot.id, source, fromX: target.x - directionToVector(direction).x, fromY: target.y - directionToVector(direction).y, x: robot.x, y: robot.y });
+  events.push({ type: "robot_moved", robotId: robot.id, source, moveGroup: options.moveGroup || createMoveGroup(), fromX: target.x - directionToVector(direction).x, fromY: target.y - directionToVector(direction).y, x: robot.x, y: robot.y });
   if (isPit(game.map, robot.x, robot.y)) destroyRobot(game, robot, "pit", events);
   else resolveCheckpoint(game, robot, events);
   return true;
@@ -239,6 +253,24 @@ function applyConveyorArrivalRotation(game, robot, sourceConveyor, moveDirection
   if (!turn) return;
   robot.direction = rotateDirection(robot.direction, turn);
   events.push({ type: "conveyor_rotated", robotId: robot.id, turn, fromDirection: rotateDirection(robot.direction, -turn), direction: robot.direction });
+}
+
+function resolveRotators(game, events) {
+  for (const robot of liveRobots(game)) {
+    const rotator = tileAt(game.map, robot.x, robot.y)?.rotator;
+    if (!rotator) continue;
+    const turn = rotatorTurn(rotator);
+    const fromDirection = robot.direction;
+    robot.direction = rotateDirection(robot.direction, turn);
+    events.push({
+      type: "robot_rotated",
+      source: "rotator",
+      robotId: robot.id,
+      turn,
+      fromDirection,
+      direction: robot.direction
+    });
+  }
 }
 
 function finishTurn(game, events) {
@@ -294,6 +326,7 @@ function resolveLasers(game, events) {
   for (const shot of shots) {
     const trace = traceLaser(game, shot.x, shot.y, shot.direction);
     const hit = trace.hit;
+    if (shot.source === "robot_laser" && !hit) continue;
     events.push({
       type: "laser_fired",
       source: shot.source,
@@ -387,6 +420,10 @@ function laserPower(laser = {}) {
   return Math.max(1, Math.min(3, Number(laser.power) || 1));
 }
 
+function rotatorTurn(rotator = {}) {
+  return rotator.direction === "ccw" || rotator.direction === "counterclockwise" ? -1 : 1;
+}
+
 
 function lockedProgramForNextTurn(player, robot) {
   const previousProgram = normalizeProgram(player.program);
@@ -424,10 +461,20 @@ function normalizeProgram(program = []) {
 
 function canEnterCell(game, x, y, direction) {
   const target = nextCell(x, y, direction);
-  if (!isInsideMap(game.map, target.x, target.y)) return true;
   const currentTile = tileAt(game.map, x, y);
+  if (hasWall(currentTile, direction)) return false;
+  if (!isInsideMap(game.map, target.x, target.y)) return true;
   const targetTile = tileAt(game.map, target.x, target.y);
-  return !currentTile?.walls?.includes(direction) && !targetTile?.walls?.includes(oppositeDirection(direction));
+  return !hasWall(targetTile, oppositeDirection(direction));
+}
+
+function hasWall(tile, direction) {
+  if (!tile || !direction) return false;
+  if (Array.isArray(tile.walls)) return tile.walls.includes(direction);
+  if (typeof tile.walls === "string") return tile.walls === direction;
+  if (tile.walls && typeof tile.walls === "object") return Boolean(tile.walls[direction]);
+  if (tile.wall && typeof tile.wall === "object") return Boolean(tile.wall[direction]);
+  return tile.wall === direction;
 }
 
 function conveyorOutputDirection(conveyor) {
@@ -522,6 +569,10 @@ function oppositeDirection(direction) {
 
 function cellKey(x, y) {
   return `${x},${y}`;
+}
+
+function createMoveGroup() {
+  return `move_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function appendEvents(game, events) {
